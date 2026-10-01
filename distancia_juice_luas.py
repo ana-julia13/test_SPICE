@@ -178,9 +178,9 @@ def grafico(eixo, nome, datas, dists, et_min, d_min, unidade=None):
     fmt_eixo = ",.0f" if rotulo == "km" else "g"
     eixo.yaxis.set_major_locator(LogLocator(subs=(1, 2, 5)))   # 1, 2, 5, 10, 20...
     eixo.yaxis.set_major_formatter(FuncFormatter(lambda v, _: f"{v:{fmt_eixo}}"))
-    # Com menos de uma década no eixo, rotula também os ticks menores;
+    # Com um intervalo pequeno no eixo, rotula também os ticks menores;
     # com mais, só os principais (senão os números se amontoam)
-    if np.nanmax(dists) / np.nanmin(dists) < 10:
+    if np.nanmax(dists) / np.nanmin(dists) < 3:
         eixo.yaxis.set_minor_formatter(FuncFormatter(lambda v, _: f"{v:{fmt_eixo}}"))
     else:
         eixo.yaxis.set_minor_formatter(NullFormatter())

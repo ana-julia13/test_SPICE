@@ -13,9 +13,8 @@ import os
 import re
 
 import numpy as np
-import matplotlib
-import matplotlib.ticker
 import matplotlib.pyplot as plt
+from matplotlib.ticker import FuncFormatter, LogLocator, NullFormatter
 import spiceypy as spice
 from spiceypy.utils.exceptions import SpiceyError
 
@@ -33,6 +32,9 @@ PASTA_SAIDA = "resultados"
 JUICE = "JUICE"
 JUICE_ID = -28
 ALVO = "THEBE"           # "JUPITER", "THEBE", "METIS", "ADRASTEA", "AMALTHEA"...
+
+# Unidade da distância nos gráficos: "km" ou "RJ" (raios de Júpiter)
+UNIDADE = "km"
 # =========================================================================
 
 
@@ -159,17 +161,32 @@ def main():
         for data, d in zip(datas, dists):
             f.write(f"{data:%Y-%m-%dT%H:%M:%S},{d:.3f},{d / rj:.5f}\n")
 
+    if UNIDADE.upper() == "RJ":
+        fator, rotulo, fmt = rj, "RJ", "g"
+    elif UNIDADE.lower() == "km":
+        fator, rotulo, fmt = 1.0, "km", ",.0f"
+    else:
+        raise SystemExit(f'ERRO: UNIDADE deve ser "km" ou "RJ" (está "{UNIDADE}")')
+    formata = FuncFormatter(lambda v, _: f"{v:{fmt}}")
+
     fig, (eixo, zoom) = plt.subplots(2, 1, figsize=(12, 9))
-    eixo.semilogy(datas, dists / rj, lw=0.6, label=f"JUICE–{ALVO}")
+    eixo.semilogy(datas, dists / fator, lw=0.6, label=f"JUICE–{ALVO}")
     if ets_top:
-        eixo.plot(datas_top, d_min[ordem] / rj, "ro", ms=4,
+        eixo.plot(datas_top, d_min[ordem] / fator, "ro", ms=4,
                   label=f"{len(ordem)} aproximações mais próximas")
     eixo.set_title(f"Distância JUICE–{ALVO}  (mín: {d_mais_perto / rj:.2f} RJ = "
                    f"{d_mais_perto:,.0f} km)")
     eixo.set_xlabel("data (UTC)")
-    eixo.set_ylabel("distância [raios de Júpiter]")
-    eixo.yaxis.set_major_formatter(matplotlib.ticker.ScalarFormatter())
-    eixo.yaxis.set_minor_formatter(matplotlib.ticker.NullFormatter())
+    eixo.set_ylabel(f"distância [{rotulo}] (escala log)")
+    # Eixo x começa no primeiro ponto e termina no último (sem espaço em branco)
+    eixo.set_xlim(datas[0], datas[-1])
+    # Números normais no eixo y: 1, 2, 5, 10, 20, 50... (em vez de 2×10¹)
+    eixo.yaxis.set_major_locator(LogLocator(subs=(1, 2, 5)))
+    eixo.yaxis.set_major_formatter(formata)
+    if np.nanmax(dists) / np.nanmin(dists) < 3:      # intervalo pequeno:
+        eixo.yaxis.set_minor_formatter(formata)      # rotula os ticks menores
+    else:
+        eixo.yaxis.set_minor_formatter(NullFormatter())
     eixo.grid(True, which="both", alpha=0.3)
     eixo.legend()
 
@@ -178,15 +195,17 @@ def main():
                          et_mais_perto + ZOOM_DIAS * 86400, 120)
     ets_zoom = np.array([et for et in ets_zoom if spice.wnelmd(et, janela)])
     horas = (ets_zoom - et_mais_perto) / 3600
-    zoom.plot(horas, distancia(ets_zoom) / 1000, lw=1, label=f"JUICE–{ALVO}")
+    zoom.plot(horas, distancia(ets_zoom) / fator, lw=1, label=f"JUICE–{ALVO}")
     if ALVO != "JUPITER":
-        zoom.plot(horas, distancia(ets_zoom, "JUPITER") / 1000, lw=1, ls="--",
+        zoom.plot(horas, distancia(ets_zoom, "JUPITER") / fator, lw=1, ls="--",
                   color="gray", label="JUICE–JUPITER (referência)")
-    zoom.plot(0, d_mais_perto / 1000, "ro", ms=5)
+    zoom.plot(0, d_mais_perto / fator, "ro", ms=5)
     zoom.set_title(f"Zoom de ±{ZOOM_DIAS} dias em volta da menor distância "
                    f"({spice.et2utc(et_mais_perto, 'C', 0)} UTC)")
     zoom.set_xlabel("horas em relação à menor distância")
-    zoom.set_ylabel("distância [mil km]")
+    zoom.set_ylabel(f"distância [{rotulo}]")
+    zoom.set_xlim(horas[0], horas[-1])
+    zoom.yaxis.set_major_formatter(formata)
     zoom.grid(True, alpha=0.3)
     zoom.legend()
     plt.tight_layout()
