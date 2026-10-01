@@ -62,9 +62,21 @@ def distancia(ets):
     return np.linalg.norm(np.atleast_2d(pos), axis=1)
 
 
+def carrega_meta_kernel(caminho):
+    """O meta-kernel usa caminhos relativos (../ck/...), então é preciso
+    carregá-lo de dentro da pasta dele."""
+    pasta_atual = os.getcwd()
+    os.chdir(os.path.dirname(os.path.abspath(caminho)))
+    try:
+        spice.furnsh(os.path.basename(caminho))
+    finally:
+        os.chdir(pasta_atual)
+
+
 def main():
-    spice.furnsh(META_KERNEL)
+    carrega_meta_kernel(META_KERNEL)
     print(f"Meta-kernel carregado: {META_KERNEL}")
+    print(f"  ({spice.ktotal('ALL')} kernels no total)")
 
     pedido = spice.cell_double(2)
     spice.wninsd(spice.str2et(INICIO), spice.str2et(FIM), pedido)
