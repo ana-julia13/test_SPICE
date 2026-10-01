@@ -9,6 +9,7 @@ Distância entre a JUICE e Júpiter.
 """
 
 import os
+import re
 
 import numpy as np
 import matplotlib.pyplot as plt
@@ -63,14 +64,37 @@ def distancia(ets):
 
 
 def carrega_meta_kernel(caminho):
-    """O meta-kernel usa caminhos relativos (../ck/...), então é preciso
-    carregá-lo de dentro da pasta dele."""
-    pasta_atual = os.getcwd()
-    os.chdir(os.path.dirname(os.path.abspath(caminho)))
-    try:
-        spice.furnsh(os.path.basename(caminho))
-    finally:
-        os.chdir(pasta_atual)
+    """Lê o KERNELS_TO_LOAD do meta-kernel e carrega um por um, pulando os
+    arquivos que não existem no disco (em vez de parar no primeiro que falta).
+    Caminhos relativos (../ck/...) são resolvidos a partir da pasta do .tm."""
+    pasta_mk = os.path.dirname(os.path.abspath(caminho))
+    with open(caminho) as f:
+        texto = f.read()
+
+    # Só o que está entre \begindata e \begintext é dado
+    dados = " ".join(re.findall(r"\\begindata(.*?)(?=\\begintext|$)", texto, re.S))
+    variaveis = {}
+    for nome, valor in re.findall(r"(\w+)\s*\+?=\s*(\([^)]*\)|'[^']*')", dados):
+        variaveis.setdefault(nome, []).extend(re.findall(r"'([^']*)'", valor))
+
+    simbolos = dict(zip(variaveis.get("PATH_SYMBOLS", []),
+                        variaveis.get("PATH_VALUES", [])))
+
+    faltando = []
+    for kernel in variaveis.get("KERNELS_TO_LOAD", []):
+        for simbolo, valor in simbolos.items():
+            kernel = kernel.replace("$" + simbolo, valor)
+        if not os.path.isabs(kernel):
+            kernel = os.path.normpath(os.path.join(pasta_mk, kernel))
+        if os.path.isfile(kernel):
+            spice.furnsh(kernel)
+        else:
+            faltando.append(kernel)
+
+    if faltando:
+        print(f"AVISO: {len(faltando)} kernel(s) do meta-kernel não existem e foram pulados:")
+        for kernel in faltando:
+            print(f"  {kernel}")
 
 
 def main():
