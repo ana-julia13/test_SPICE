@@ -29,7 +29,7 @@ LUAS = {                 # nome SPICE : código NAIF
     "AMALTHEA": 505,
     "THEBE": 514,
 }
-JANUS = "JUICE_JANUS"    # nome do instrumento no IK/FK
+JANUS_ID = -28200        # código NAIF da JANUS (do IK)
 NIVEIS_PX = [1, 10, 100] # linhas de referência nos gráficos de pixels
 # =========================================================================
 
@@ -50,8 +50,7 @@ def cobertura_spk(id_corpo):
 
 def ifov_janus():
     """IFOV (rad/pixel) lido direto do IK da JANUS."""
-    janus_id = spice.bodn2c(JANUS)
-    return spice.gdpool(f"INS{janus_id}_IFOV", 0, 1)[0]
+    return spice.gdpool(f"INS{JANUS_ID}_IFOV", 0, 1)[0]
 
 
 spice.furnsh(META_KERNEL)
