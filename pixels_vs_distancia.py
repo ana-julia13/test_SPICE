@@ -19,7 +19,7 @@ import matplotlib.pyplot as plt
 import spiceypy as spice
 
 # ======================= CONFIGURAÇÃO (edite aqui) =======================
-META_KERNEL = r"/caminho/para/JUICE/kernels/mk/juice_crema_5_1_150la.tm"
+META_KERNEL = r"/caminho/para/JUICE/kernels/mk/juice_plan.tm"
 INICIO = "2031-07-01"    # início do período de interesse (UTC)
 FIM = "2035-12-31"       # fim do período de interesse (UTC)
 PASSO_S = 600            # passo de amostragem em segundos (600 s = 10 min)
