@@ -49,12 +49,9 @@ def cobertura_spk(id_corpo):
 
 
 def ifov_janus():
-    """IFOV (rad/pixel) = lado maior do FOV (do IK) / número de pixels nesse lado."""
+    """IFOV (rad/pixel) lido direto do IK da JANUS."""
     janus_id = spice.bodn2c(JANUS)
-    _, _, _, _, cantos = spice.getfov(janus_id, 4)
-    lado_maior = max(spice.vsep(cantos[0], cantos[1]), spice.vsep(cantos[1], cantos[2]))
-    n_pixels = spice.gipool(f"INS{janus_id}_PIXEL_SAMPLES", 0, 1)[0]
-    return lado_maior / n_pixels
+    return spice.gdpool(f"INS{janus_id}_IFOV", 0, 1)[0]
 
 
 spice.furnsh(META_KERNEL)
