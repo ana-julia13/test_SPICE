@@ -12,6 +12,8 @@ Gera:
   distancia_pixels_tempo.png  distância e pixels × tempo, juntos (para correlacionar)
 """
 
+import os
+
 import numpy as np
 import matplotlib.pyplot as plt
 import spiceypy as spice
@@ -53,7 +55,12 @@ def ifov_janus():
     return spice.gdpool(f"INS{JANUS_ID}_IFOV", 0, 1)[0]
 
 
-spice.furnsh(META_KERNEL)
+# Os caminhos dentro do meta-kernel (PATH_VALUES = '..') são relativos à pasta
+# de onde se roda o Python; por isso carregamos a partir da pasta do .tm.
+pasta_atual = os.getcwd()
+os.chdir(os.path.dirname(os.path.abspath(META_KERNEL)))
+spice.furnsh(os.path.basename(META_KERNEL))
+os.chdir(pasta_atual)
 IFOV = ifov_janus()
 print(f"IFOV da JANUS (IK): {IFOV * 1e6:.2f} µrad")
 
