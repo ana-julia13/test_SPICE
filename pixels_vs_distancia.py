@@ -1,7 +1,7 @@
 """
 Pixels que cada lua interna ocupa na JANUS, a partir da distância JUICE–lua.
 
-Usa os mesmos kernels do distancia_juice_luas.py (meta-kernel):
+Carrega os kernels igual ao distancia_juice_luas.py (juice_plan.tm):
 distâncias dos SPKs, raios das luas do PCK e IFOV da JANUS do IK.
 pixels = D / (d × IFOV)
 
@@ -19,9 +19,14 @@ import matplotlib.pyplot as plt
 import spiceypy as spice
 
 # ======================= CONFIGURAÇÃO (edite aqui) =======================
-META_KERNEL = r"/caminho/para/JUICE/kernels/mk/juice_plan.tm"
-INICIO = "2031-07-01"    # início do período de interesse (UTC)
-FIM = "2035-12-31"       # fim do período de interesse (UTC)
+# Pasta "kernels" da JUICE (a que tem ck/, fk/, lsk/, mk/, spk/ ...)
+PASTA_KERNELS = "/pho/figaro/estec/juice/kernels"
+META_KERNEL = "juice_plan.tm"   # fica dentro de PASTA_KERNELS/mk
+
+# Período: None = usa TODO o período em que há dados (a missão inteira).
+# Ou coloque datas, ex.: INICIO = "2031-07-01", FIM = "2035-12-31"
+INICIO = None
+FIM = None
 PASSO_S = 600            # passo de amostragem em segundos (600 s = 10 min)
 
 JUICE_ID = -28
@@ -36,16 +41,28 @@ NIVEIS_PX = [1, 10, 100] # linhas de referência nos gráficos de pixels
 # =========================================================================
 
 
-def ids_na_celula(celula):
-    return [celula[i] for i in range(spice.card(celula))]
+def carrega_meta_kernel():
+    """Os meta-kernels da JUICE usam PATH_VALUES = ( '..' ): os caminhos são
+    relativos à pasta mk/. Por isso entramos na pasta mk/ antes do furnsh."""
+    pasta_mk = os.path.join(PASTA_KERNELS, "mk")
+    pasta_original = os.getcwd()
+    os.chdir(pasta_mk)
+    try:
+        spice.furnsh(META_KERNEL)
+    finally:
+        os.chdir(pasta_original)
+    return pasta_mk
 
 
-def cobertura_spk(id_corpo):
+def cobertura_spk(id_corpo, pasta_mk):
     """Junta a cobertura de todos os SPKs carregados que têm dados deste corpo."""
-    cobertura = spice.cell_double(20000)
+    cobertura = spice.cell_double(200000)
     for i in range(spice.ktotal("SPK")):
         arquivo, _, _, _ = spice.kdata(i, "SPK")
-        if id_corpo in ids_na_celula(spice.spkobj(arquivo)):
+        # caminhos do meta-kernel são relativos à pasta mk/ (ex.: ../spk/x.bsp)
+        arquivo = os.path.normpath(os.path.join(pasta_mk, arquivo))
+        objetos = spice.spkobj(arquivo)
+        if id_corpo in [objetos[k] for k in range(spice.card(objetos))]:
             spice.spkcov(arquivo, id_corpo, cobertura)
     return cobertura
 
@@ -55,22 +72,23 @@ def ifov_janus():
     return spice.gdpool(f"INS{JANUS_ID}_IFOV", 0, 1)[0]
 
 
-# Os caminhos dentro do meta-kernel (PATH_VALUES = '..') são relativos à pasta
-# de onde se roda o Python; por isso carregamos a partir da pasta do .tm.
-pasta_atual = os.getcwd()
-os.chdir(os.path.dirname(os.path.abspath(META_KERNEL)))
-spice.furnsh(os.path.basename(META_KERNEL))
-os.chdir(pasta_atual)
+pasta_mk = carrega_meta_kernel()
 IFOV = ifov_janus()
-print(f"IFOV da JANUS (IK): {IFOV * 1e6:.2f} µrad")
+print(f"{spice.ktotal('ALL')} kernels carregados | IFOV da JANUS (IK): {IFOV * 1e6:.2f} µrad")
 
-janela = spice.cell_double(2)
-spice.wninsd(spice.str2et(INICIO), spice.str2et(FIM), janela)
-cob_juice = cobertura_spk(JUICE_ID)
+# Período: o pedido (INICIO/FIM) ou a cobertura toda da JUICE
+cob_juice = cobertura_spk(JUICE_ID, pasta_mk)
+if INICIO or FIM:
+    n = spice.wncard(cob_juice)
+    et0 = spice.str2et(INICIO) if INICIO else spice.wnfetd(cob_juice, 0)[0]
+    et1 = spice.str2et(FIM) if FIM else spice.wnfetd(cob_juice, n - 1)[1]
+    janela = spice.cell_double(2)
+    spice.wninsd(et0, et1, janela)
+    cob_juice = spice.wnintd(cob_juice, janela)
 
 dados = {}   # nome -> (datas, distâncias, pixels, diâmetro)
 for nome, id_lua in LUAS.items():
-    comum = spice.wnintd(spice.wnintd(cob_juice, cobertura_spk(id_lua)), janela)
+    comum = spice.wnintd(cob_juice, cobertura_spk(id_lua, pasta_mk))
     if spice.wncard(comum) == 0:
         print(f"{nome}: sem cobertura em comum com a JUICE no período")
         continue
