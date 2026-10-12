@@ -1,109 +1,144 @@
 """
-Quantos pixels cada lua interna ocupa numa imagem da JANUS, em função da distância.
+Pixels que cada lua interna ocupa na JANUS, a partir da distância JUICE–lua.
 
-Não depende de data: é só a fórmula  N = D / (d × IFOV), onde
-  D    = diâmetro da lua (km)
-  d    = distância JUICE -> lua (km)
-  IFOV = ângulo de um pixel da JANUS (rad)
+Usa os mesmos kernels do distancia_juice_luas.py (meta-kernel):
+distâncias dos SPKs e raios das luas do PCK.  pixels = D / (d × IFOV)
 
-Serve de "régua" para traduzir o gráfico de distância em "o que dá para ver",
-e para escolher as linhas de corte (N_min) de cada lua.
+Gera:
+  distancia_tempo.png         distância × tempo
+  pixels_tempo.png            pixels × tempo
+  pixels_distancia.png        pixels × distância
+  distancia_pixels_tempo.png  distância e pixels × tempo, juntos (para correlacionar)
 """
 
 import numpy as np
 import matplotlib.pyplot as plt
+import spiceypy as spice
 
 # ======================= CONFIGURAÇÃO (edite aqui) =======================
-IFOV = 15e-6             # rad/pixel da JANUS (confirme no IK)
-
-# True: lê os raios do PCK pelo SPICE. False: usa os valores fixos abaixo.
-USAR_SPICE = False
 META_KERNEL = r"/caminho/para/JUICE/kernels/mk/juice_crema_5_1_150la.tm"
+INICIO = "2031-07-01"    # início do período de interesse (UTC)
+FIM = "2035-12-31"       # fim do período de interesse (UTC)
+PASSO_S = 600            # passo de amostragem em segundos (600 s = 10 min)
 
-# Raios (a, b, c) em km, do pck00010/pck00011. Usados se USAR_SPICE = False.
-RAIOS_FIXOS = {
-    "AMALTHEA": (125.0, 73.0, 64.0),
-    "THEBE": (58.0, 49.0, 42.0),
-    "METIS": (30.0, 20.0, 17.0),
-    "ADRASTEA": (10.0, 8.0, 7.0),
+JUICE_ID = -28
+LUAS = {                 # nome SPICE : código NAIF
+    "METIS": 516,
+    "ADRASTEA": 515,
+    "AMALTHEA": 505,
+    "THEBE": 514,
 }
-
-# Qual diâmetro usar: "medio" (média dos 3 raios) ou "maior" (eixo maior, caso otimista)
-DIAMETRO = "medio"
-
-# Faixa de distâncias do gráfico (km)
-D_MIN_KM, D_MAX_KM = 1e4, 2e7
-
-# Linhas de referência: pixels -> o que dá para ver
-NIVEIS = {1: "1 px: só um ponto", 10: "10 px: forma visível", 100: "100 px: detalhes de superfície"}
-
-# Opcional: distâncias para marcar com linha vertical, ex.: a mínima do seu
-# script de distância. Deixe {} para não marcar nada.
-DISTANCIAS_MARCAR = {}   # ex.: {"mín. Amalthea": 5.0e5}
-
-# Cores fixas por lua (a cor segue a lua, não a ordem)
-CORES = {"AMALTHEA": "#2a78d6", "THEBE": "#eb6834", "METIS": "#1baf7a", "ADRASTEA": "#e87ba4"}
+IFOV = 15e-6             # rad/pixel da JANUS (confirme no IK)
+NIVEIS_PX = [1, 10, 100] # linhas de referência nos gráficos de pixels
 # =========================================================================
 
 
-def le_raios():
-    if not USAR_SPICE:
-        return RAIOS_FIXOS
-    import spiceypy as spice
-    spice.furnsh(META_KERNEL)
-    raios = {lua: tuple(spice.bodvrd(lua, "RADII", 3)[1]) for lua in RAIOS_FIXOS}
-    spice.kclear()
-    return raios
+def ids_na_celula(celula):
+    return [celula[i] for i in range(spice.card(celula))]
 
 
-def diametro(raios):
-    return 2 * (max(raios) if DIAMETRO == "maior" else np.mean(raios))
+def cobertura_spk(id_corpo):
+    """Junta a cobertura de todos os SPKs carregados que têm dados deste corpo."""
+    cobertura = spice.cell_double(20000)
+    for i in range(spice.ktotal("SPK")):
+        arquivo, _, _, _ = spice.kdata(i, "SPK")
+        if id_corpo in ids_na_celula(spice.spkobj(arquivo)):
+            spice.spkcov(arquivo, id_corpo, cobertura)
+    return cobertura
 
 
-diametros = {lua: diametro(r) for lua, r in le_raios().items()}
-dist = np.logspace(np.log10(D_MIN_KM), np.log10(D_MAX_KM), 400)
+spice.furnsh(META_KERNEL)
 
-# ---- tabela no terminal: distância máxima para atingir cada nível ----
-print(f"IFOV = {IFOV * 1e6:.1f} µrad   |   diâmetro: {DIAMETRO}")
-print(f"{'lua':<10}{'D (km)':>8}" + "".join(f"{f'd p/ {n} px':>16}" for n in NIVEIS))
-for lua, D in diametros.items():
-    linhas = "".join(f"{D / (n * IFOV):>13,.0f} km" for n in NIVEIS)
-    print(f"{lua:<10}{D:>8.1f}{linhas}")
-for rotulo, d in DISTANCIAS_MARCAR.items():
-    print(f"\nA {d:,.0f} km ({rotulo}):")
-    for lua, D in diametros.items():
-        print(f"  {lua:<10} {D / (d * IFOV):6.1f} px")
+janela = spice.cell_double(2)
+spice.wninsd(spice.str2et(INICIO), spice.str2et(FIM), janela)
+cob_juice = cobertura_spk(JUICE_ID)
 
-# ---- gráfico ----
+dados = {}   # nome -> (datas, distâncias, pixels, diâmetro)
+for nome, id_lua in LUAS.items():
+    comum = spice.wnintd(spice.wnintd(cob_juice, cobertura_spk(id_lua)), janela)
+    if spice.wncard(comum) == 0:
+        print(f"{nome}: sem cobertura em comum com a JUICE no período")
+        continue
+
+    _, raios = spice.bodvrd(nome, "RADII", 3)
+    D = 2 * np.mean(raios)                       # diâmetro médio (km)
+
+    datas, dists = [], []
+    for k in range(spice.wncard(comum)):
+        a, b = spice.wnfetd(comum, k)
+        ets = np.arange(a, b, PASSO_S)
+        pos, _ = spice.spkpos(nome, ets, "J2000", "NONE", "JUICE")
+        datas.extend(spice.et2datetime(ets))
+        dists.extend(np.linalg.norm(pos, axis=1))
+        datas.append(datas[-1])                   # NaN separa lacunas no gráfico
+        dists.append(np.nan)
+
+    dists = np.array(dists)
+    pixels = D / (dists * IFOV)
+    dados[nome] = (datas, dists, pixels, D)
+
+    i = np.nanargmin(dists)
+    print(f"{nome}: D = {D:.1f} km | mín. {dists[i]:,.0f} km = {pixels[i]:.1f} px "
+          f"em {datas[i]:%Y-%m-%d %H:%M} UTC")
+
+spice.kclear()
+
+n = len(dados)
+
+# ---- distância × tempo ----
+fig, eixos = plt.subplots(n, 1, figsize=(12, 3 * n), sharex=True, squeeze=False)
+for eixo, (nome, (datas, dists, pixels, D)) in zip(eixos[:, 0], dados.items()):
+    eixo.semilogy(datas, dists, lw=0.6)
+    eixo.set_title(f"JUICE – {nome}")
+    eixo.set_ylabel("distância [km]")
+    eixo.grid(True, which="both", alpha=0.3)
+eixos[-1, 0].set_xlabel("data (UTC)")
+fig.tight_layout()
+fig.savefig("distancia_tempo.png", dpi=150)
+
+# ---- pixels × tempo ----
+fig, eixos = plt.subplots(n, 1, figsize=(12, 3 * n), sharex=True, squeeze=False)
+for eixo, (nome, (datas, dists, pixels, D)) in zip(eixos[:, 0], dados.items()):
+    eixo.semilogy(datas, pixels, lw=0.6, color="tab:orange")
+    for p in NIVEIS_PX:
+        eixo.axhline(p, color="gray", ls="--", lw=0.8)
+    eixo.set_title(f"{nome} (D ≈ {D:.0f} km)")
+    eixo.set_ylabel("pixels através da lua")
+    eixo.grid(True, which="both", alpha=0.3)
+eixos[-1, 0].set_xlabel("data (UTC)")
+fig.tight_layout()
+fig.savefig("pixels_tempo.png", dpi=150)
+
+# ---- pixels × distância ----
 fig, ax = plt.subplots(figsize=(9, 5.5))
+for nome, (datas, dists, pixels, D) in dados.items():
+    ordem = np.argsort(dists)                     # NaN vai para o fim e não é desenhado
+    ax.loglog(dists[ordem], pixels[ordem], lw=2, label=f"{nome} (D ≈ {D:.0f} km)")
+for p in NIVEIS_PX:
+    ax.axhline(p, color="gray", ls="--", lw=0.8)
+ax.set_xlabel("distância JUICE → lua [km]")
+ax.set_ylabel("pixels através da lua")
+ax.set_title(f"Pixels na JANUS (IFOV = {IFOV * 1e6:.0f} µrad)")
+ax.grid(True, which="both", alpha=0.3)
+ax.legend()
+fig.tight_layout()
+fig.savefig("pixels_distancia.png", dpi=150)
 
-for n, texto in NIVEIS.items():
-    ax.axhline(n, color="0.6", lw=0.8, ls="--", zorder=1)
-    ax.text(D_MIN_KM * 1.15, n * 1.12, texto, color="0.35", fontsize=8.5, va="bottom")
+# ---- distância e pixels × tempo, juntos ----
+fig, eixos = plt.subplots(2 * n, 1, figsize=(12, 2.5 * 2 * n), sharex=True, squeeze=False)
+for k, (nome, (datas, dists, pixels, D)) in enumerate(dados.items()):
+    ax_d, ax_p = eixos[2 * k, 0], eixos[2 * k + 1, 0]
+    ax_d.semilogy(datas, dists, lw=0.6)
+    ax_d.set_ylabel("distância [km]")
+    ax_d.set_title(nome)
+    ax_p.semilogy(datas, pixels, lw=0.6, color="tab:orange")
+    for p in NIVEIS_PX:
+        ax_p.axhline(p, color="gray", ls="--", lw=0.8)
+    ax_p.set_ylabel("pixels")
+    for ax in (ax_d, ax_p):
+        ax.grid(True, which="both", alpha=0.3)
+eixos[-1, 0].set_xlabel("data (UTC)")
+fig.tight_layout()
+fig.savefig("distancia_pixels_tempo.png", dpi=150)
 
-for rotulo, d in DISTANCIAS_MARCAR.items():
-    ax.axvline(d, color="0.3", lw=0.8, ls=":", zorder=1)
-    ax.text(d * 1.05, 0.06, rotulo, color="0.3", fontsize=8, rotation=90, va="bottom")
-
-for lua, D in diametros.items():
-    px = D / (dist * IFOV)
-    ax.plot(dist, px, color=CORES[lua], lw=2, label=f"{lua.title()} (D ≈ {D:.0f} km)", zorder=3)
-    # rótulo direto no fim da linha
-    ax.text(dist[-1] * 1.08, px[-1], lua.title(), color="0.2", fontsize=8.5, va="center")
-
-ax.set_xscale("log")
-ax.set_yscale("log")
-ax.set_xlim(D_MIN_KM, D_MAX_KM * 2.2)   # espaço para os rótulos à direita
-ax.set_ylim(0.04, 2000)
-ax.set_xlabel("Distância JUICE → lua (km)")
-ax.set_ylabel("Pixels através da lua")
-ax.set_title(f"Quantos pixels a lua ocupa na JANUS (IFOV = {IFOV * 1e6:.0f} µrad)",
-             loc="left", fontsize=12)
-ax.grid(True, which="major", color="0.9", lw=0.6)
-for lado in ("top", "right"):
-    ax.spines[lado].set_visible(False)
-ax.legend(frameon=False, fontsize=9, loc="upper right")
-
-plt.tight_layout()
-plt.savefig("pixels_vs_distancia.png", dpi=150)
 plt.show()
