@@ -2,7 +2,8 @@
 Pixels que cada lua interna ocupa na JANUS, a partir da distância JUICE–lua.
 
 Usa os mesmos kernels do distancia_juice_luas.py (meta-kernel):
-distâncias dos SPKs e raios das luas do PCK.  pixels = D / (d × IFOV)
+distâncias dos SPKs, raios das luas do PCK e IFOV da JANUS do IK.
+pixels = D / (d × IFOV)
 
 Gera:
   distancia_tempo.png         distância × tempo
@@ -28,7 +29,7 @@ LUAS = {                 # nome SPICE : código NAIF
     "AMALTHEA": 505,
     "THEBE": 514,
 }
-IFOV = 15e-6             # rad/pixel da JANUS (confirme no IK)
+JANUS = "JUICE_JANUS"    # nome do instrumento no IK/FK
 NIVEIS_PX = [1, 10, 100] # linhas de referência nos gráficos de pixels
 # =========================================================================
 
@@ -47,7 +48,18 @@ def cobertura_spk(id_corpo):
     return cobertura
 
 
+def ifov_janus():
+    """IFOV (rad/pixel) = lado maior do FOV (do IK) / número de pixels nesse lado."""
+    janus_id = spice.bodn2c(JANUS)
+    _, _, _, _, cantos = spice.getfov(janus_id, 4)
+    lado_maior = max(spice.vsep(cantos[0], cantos[1]), spice.vsep(cantos[1], cantos[2]))
+    n_pixels = spice.gipool(f"INS{janus_id}_PIXEL_SAMPLES", 0, 1)[0]
+    return lado_maior / n_pixels
+
+
 spice.furnsh(META_KERNEL)
+IFOV = ifov_janus()
+print(f"IFOV da JANUS (IK): {IFOV * 1e6:.2f} µrad")
 
 janela = spice.cell_double(2)
 spice.wninsd(spice.str2et(INICIO), spice.str2et(FIM), janela)
