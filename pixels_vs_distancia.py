@@ -4,13 +4,17 @@ Pixels que cada lua interna ocupa na JANUS, a partir da distância JUICE–lua.
 Carrega os kernels igual ao distancia_juice_luas.py (juice_plan.tm):
 distâncias dos SPKs, raios das luas do PCK e IFOV da JANUS do IK.
 pixels = D / (d × IFOV)
+elongação solar = ângulo, visto da JUICE, entre o Sol e a lua (pequeno = câmera
+                  teria que apontar perto do Sol)
 
 Gera:
   distancia_tempo.png         distância × tempo
   escala_tempo.png            escala (km/pixel) × tempo
   pixels_tempo.png            pixels × tempo
   pixels_distancia.png        pixels × distância
-  distancia_pixels_tempo.png  distância e pixels × tempo, juntos (para correlacionar)
+  elongacao_tempo.png         elongação solar × tempo
+  distancia_pixels_elongacao_tempo.png
+                              distância, pixels e elongação × tempo, juntos
 """
 
 import os
@@ -38,7 +42,8 @@ LUAS = {                 # nome SPICE : código NAIF
     "THEBE": 514,
 }
 JANUS_ID = -28200        # código NAIF da JANUS (do IK)
-NIVEIS_PX = [1, 10, 100] # linhas de referência nos gráficos de pixels
+NIVEIS_PX = [1, 10]      # linhas de referência nos gráficos de pixels
+LIMITE_SOL = 30          # graus: elongação mínima (EXEMPLO, confirme com a equipe)
 # =========================================================================
 
 
@@ -68,6 +73,12 @@ def cobertura_spk(id_corpo, pasta_mk):
     return cobertura
 
 
+def angulo_entre(v1, v2):
+    """Ângulo (graus) entre vetores linha a linha, como o vsep do SPICE."""
+    cos = np.sum(v1 * v2, axis=1) / (np.linalg.norm(v1, axis=1) * np.linalg.norm(v2, axis=1))
+    return np.degrees(np.arccos(np.clip(cos, -1, 1)))
+
+
 def ifov_janus():
     """IFOV (rad/pixel) lido direto do IK da JANUS."""
     return spice.gdpool(f"INS{JANUS_ID}_IFOV", 0, 1)[0]
@@ -87,7 +98,7 @@ if INICIO or FIM:
     spice.wninsd(et0, et1, janela)
     cob_juice = spice.wnintd(cob_juice, janela)
 
-dados = {}   # nome -> (datas, distâncias, pixels, diâmetro)
+dados = {}   # nome -> (datas, distâncias, pixels, diâmetro, elongação)
 for nome, id_lua in LUAS.items():
     comum = spice.wnintd(cob_juice, cobertura_spk(id_lua, pasta_mk))
     if spice.wncard(comum) == 0:
@@ -97,23 +108,29 @@ for nome, id_lua in LUAS.items():
     _, raios = spice.bodvrd(nome, "RADII", 3)
     D = 2 * np.mean(raios)                       # diâmetro médio (km)
 
-    datas, dists = [], []
+    datas, dists, elong = [], [], []
     for k in range(spice.wncard(comum)):
         a, b = spice.wnfetd(comum, k)
         ets = np.arange(a, b, PASSO_S)
         pos, _ = spice.spkpos(nome, ets, "J2000", "NONE", "JUICE")
+        # elongação: direções da lua e do Sol vistas da JUICE ("onde eu vejo" -> LT+S)
+        p_lua, _ = spice.spkpos(nome, ets, "J2000", "LT+S", "JUICE")
+        p_sol, _ = spice.spkpos("SUN", ets, "J2000", "LT+S", "JUICE")
         datas.extend(spice.et2datetime(ets))
         dists.extend(np.linalg.norm(pos, axis=1))
+        elong.extend(angulo_entre(np.asarray(p_lua), np.asarray(p_sol)))
         datas.append(datas[-1])                   # NaN separa lacunas no gráfico
         dists.append(np.nan)
+        elong.append(np.nan)
 
     dists = np.array(dists)
+    elong = np.array(elong)
     pixels = D / (dists * IFOV)
-    dados[nome] = (datas, dists, pixels, D)
+    dados[nome] = (datas, dists, pixels, D, elong)
 
     i = np.nanargmin(dists)
-    print(f"{nome}: D = {D:.1f} km | mín. {dists[i]:,.0f} km = {pixels[i]:.1f} px "
-          f"em {datas[i]:%Y-%m-%d %H:%M} UTC")
+    print(f"{nome}: D = {D:.1f} km | mín. {dists[i]:,.0f} km = {pixels[i]:.1f} px, "
+          f"elongação {elong[i]:.0f}° em {datas[i]:%Y-%m-%d %H:%M} UTC")
 
 spice.kclear()
 
@@ -121,7 +138,7 @@ n = len(dados)
 
 # ---- distância × tempo ----
 fig, eixos = plt.subplots(n, 1, figsize=(12, 3 * n), sharex=True, squeeze=False)
-for eixo, (nome, (datas, dists, pixels, D)) in zip(eixos[:, 0], dados.items()):
+for eixo, (nome, (datas, dists, pixels, D, elong)) in zip(eixos[:, 0], dados.items()):
     eixo.semilogy(datas, dists, lw=0.6)
     eixo.set_title(f"JUICE – {nome}")
     eixo.set_ylabel("distância [km]")
@@ -132,7 +149,7 @@ fig.savefig("distancia_tempo.png", dpi=150)
 
 # ---- escala (km/pixel) × tempo ----
 fig, eixos = plt.subplots(n, 1, figsize=(12, 3 * n), sharex=True, squeeze=False)
-for eixo, (nome, (datas, dists, pixels, D)) in zip(eixos[:, 0], dados.items()):
+for eixo, (nome, (datas, dists, pixels, D, elong)) in zip(eixos[:, 0], dados.items()):
     eixo.semilogy(datas, dists * IFOV, lw=0.6, color="tab:purple")
     eixo.set_title(nome)
     eixo.set_ylabel("escala [km/pixel]")
@@ -143,20 +160,33 @@ fig.savefig("escala_tempo.png", dpi=150)
 
 # ---- pixels × tempo ----
 fig, eixos = plt.subplots(n, 1, figsize=(12, 3 * n), sharex=True, squeeze=False)
-for eixo, (nome, (datas, dists, pixels, D)) in zip(eixos[:, 0], dados.items()):
-    eixo.semilogy(datas, pixels, lw=0.6, color="tab:orange")
+for eixo, (nome, (datas, dists, pixels, D, elong)) in zip(eixos[:, 0], dados.items()):
+    eixo.plot(datas, pixels, lw=0.6, color="tab:orange")
     for p in NIVEIS_PX:
         eixo.axhline(p, color="gray", ls="--", lw=0.8)
     eixo.set_title(f"{nome} (D ≈ {D:.0f} km)")
     eixo.set_ylabel("pixels através da lua")
-    eixo.grid(True, which="both", alpha=0.3)
+    eixo.grid(True, alpha=0.3)
 eixos[-1, 0].set_xlabel("data (UTC)")
 fig.tight_layout()
 fig.savefig("pixels_tempo.png", dpi=150)
 
+# ---- elongação solar × tempo ----
+fig, eixos = plt.subplots(n, 1, figsize=(12, 3 * n), sharex=True, squeeze=False)
+for eixo, (nome, (datas, dists, pixels, D, elong)) in zip(eixos[:, 0], dados.items()):
+    eixo.plot(datas, elong, lw=0.6, color="tab:green")
+    eixo.axhline(LIMITE_SOL, color="gray", ls="--", lw=0.8)
+    eixo.set_ylim(0, 180)
+    eixo.set_title(nome)
+    eixo.set_ylabel("elongação solar [°]")
+    eixo.grid(True, alpha=0.3)
+eixos[-1, 0].set_xlabel("data (UTC)")
+fig.tight_layout()
+fig.savefig("elongacao_tempo.png", dpi=150)
+
 # ---- pixels × distância ----
 fig, ax = plt.subplots(figsize=(9, 5.5))
-for nome, (datas, dists, pixels, D) in dados.items():
+for nome, (datas, dists, pixels, D, elong) in dados.items():
     ordem = np.argsort(dists)                     # NaN vai para o fim e não é desenhado
     ax.loglog(dists[ordem], pixels[ordem], lw=2, label=f"{nome} (D ≈ {D:.0f} km)")
 for p in NIVEIS_PX:
@@ -169,21 +199,26 @@ ax.legend()
 fig.tight_layout()
 fig.savefig("pixels_distancia.png", dpi=150)
 
-# ---- distância e pixels × tempo, juntos ----
-fig, eixos = plt.subplots(2 * n, 1, figsize=(12, 2.5 * 2 * n), sharex=True, squeeze=False)
-for k, (nome, (datas, dists, pixels, D)) in enumerate(dados.items()):
-    ax_d, ax_p = eixos[2 * k, 0], eixos[2 * k + 1, 0]
+# ---- distância, pixels e elongação × tempo, juntos ----
+fig, eixos = plt.subplots(3 * n, 1, figsize=(12, 2.3 * 3 * n), sharex=True, squeeze=False)
+for k, (nome, (datas, dists, pixels, D, elong)) in enumerate(dados.items()):
+    ax_d, ax_p, ax_e = eixos[3 * k, 0], eixos[3 * k + 1, 0], eixos[3 * k + 2, 0]
     ax_d.semilogy(datas, dists, lw=0.6)
     ax_d.set_ylabel("distância [km]")
     ax_d.set_title(nome)
-    ax_p.semilogy(datas, pixels, lw=0.6, color="tab:orange")
+    ax_d.grid(True, which="both", alpha=0.3)
+    ax_p.plot(datas, pixels, lw=0.6, color="tab:orange")
     for p in NIVEIS_PX:
         ax_p.axhline(p, color="gray", ls="--", lw=0.8)
     ax_p.set_ylabel("pixels")
-    for ax in (ax_d, ax_p):
-        ax.grid(True, which="both", alpha=0.3)
+    ax_p.grid(True, alpha=0.3)
+    ax_e.plot(datas, elong, lw=0.6, color="tab:green")
+    ax_e.axhline(LIMITE_SOL, color="gray", ls="--", lw=0.8)
+    ax_e.set_ylim(0, 180)
+    ax_e.set_ylabel("elongação [°]")
+    ax_e.grid(True, alpha=0.3)
 eixos[-1, 0].set_xlabel("data (UTC)")
 fig.tight_layout()
-fig.savefig("distancia_pixels_tempo.png", dpi=150)
+fig.savefig("distancia_pixels_elongacao_tempo.png", dpi=150)
 
 plt.show()
