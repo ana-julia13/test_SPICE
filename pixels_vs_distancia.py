@@ -7,6 +7,7 @@ pixels = D / (d × IFOV)
 
 Gera:
   distancia_tempo.png         distância × tempo
+  escala_tempo.png            escala (km/pixel) × tempo
   pixels_tempo.png            pixels × tempo
   pixels_distancia.png        pixels × distância
   distancia_pixels_tempo.png  distância e pixels × tempo, juntos (para correlacionar)
@@ -128,6 +129,17 @@ for eixo, (nome, (datas, dists, pixels, D)) in zip(eixos[:, 0], dados.items()):
 eixos[-1, 0].set_xlabel("data (UTC)")
 fig.tight_layout()
 fig.savefig("distancia_tempo.png", dpi=150)
+
+# ---- escala (km/pixel) × tempo ----
+fig, eixos = plt.subplots(n, 1, figsize=(12, 3 * n), sharex=True, squeeze=False)
+for eixo, (nome, (datas, dists, pixels, D)) in zip(eixos[:, 0], dados.items()):
+    eixo.semilogy(datas, dists * IFOV, lw=0.6, color="tab:purple")
+    eixo.set_title(nome)
+    eixo.set_ylabel("escala [km/pixel]")
+    eixo.grid(True, which="both", alpha=0.3)
+eixos[-1, 0].set_xlabel("data (UTC)")
+fig.tight_layout()
+fig.savefig("escala_tempo.png", dpi=150)
 
 # ---- pixels × tempo ----
 fig, eixos = plt.subplots(n, 1, figsize=(12, 3 * n), sharex=True, squeeze=False)
