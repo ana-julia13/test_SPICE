@@ -26,6 +26,7 @@ import numpy as np
 import matplotlib
 matplotlib.use("Agg")  # só salva PNG, sem abrir janela (não precisa de Qt)
 import matplotlib.pyplot as plt
+from matplotlib.ticker import FuncFormatter, LogLocator, NullFormatter
 import spiceypy as spice
 
 # ======================= CONFIGURAÇÃO (edite aqui) =======================
@@ -119,6 +120,19 @@ def gm_corpo(nome):
     return spice.bodvrd(nome, "GM", 1)[1][0]
 
 
+def formata_eixo(eixo):
+    """Eixo x começando e terminando nos dados e eixo y sem notação
+    científica (nem o '1e-7+4.217e5' em cima do eixo)."""
+    eixo.margins(x=0)
+    if eixo.get_yscale() == "log":
+        eixo.yaxis.set_major_locator(LogLocator(subs=(1.0, 2.0, 5.0)))
+        eixo.yaxis.set_major_formatter(FuncFormatter(
+            lambda v, _: np.format_float_positional(float(f"{v:.6g}"), trim="-")))
+        eixo.yaxis.set_minor_formatter(NullFormatter())
+    else:
+        eixo.ticklabel_format(axis="y", style="plain", useOffset=False)
+
+
 carrega_kernels(KERNELS)
 os.makedirs(PASTA_SAIDA, exist_ok=True)
 
@@ -198,6 +212,7 @@ for nome, id_lua in LUAS.items():
             eixo.plot(datas, tabela[:, j], lw=0.6)
         eixo.set_ylabel(rot)
         eixo.grid(alpha=0.3)
+        formata_eixo(eixo)
     eixos[0].set_title(f"{nome} – elementos osculadores jovicêntricos (SPICE, {FRAME})")
     eixos[-1].set_xlabel("data (UTC)")
     fig.tight_layout()
@@ -224,6 +239,8 @@ for eixo, rot in zip(eixos, ["a / <a>", "e", "i [°]"]):
     eixo.set_ylabel(rot)
     eixo.grid(alpha=0.3)
 eixos[1].set_yscale("log")
+for eixo in eixos:
+    formata_eixo(eixo)
 eixos[0].legend(ncol=4, fontsize=8)
 eixos[-1].set_xlabel("data (UTC)")
 fig.tight_layout()
