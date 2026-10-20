@@ -16,7 +16,7 @@ mu = gm[0]
 
 def matriz_equador_jupiter(et):
     """Matriz J2000 -> frame INERCIAL alinhado ao equador de Júpiter em 'et'."""
-    polo = spice.pxform("IAU_JUPITER", "J2000", et)[:, 2]  # eixo z de Júpiter em J2000
+    polo = spice.pxform("IAU_JUPITER", "J2000", et)[:, 2].copy()  # eixo z de Júpiter em J2000
     nodo = spice.ucrss([0.0, 0.0, 1.0], polo)             # nó do equador de Júpiter
     y = spice.ucrss(polo, nodo)
     return np.array([nodo, y, polo])
