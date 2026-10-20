@@ -23,6 +23,8 @@ O meta-kernel da JUICE já carrega equivalentes desses arquivos.
 import os
 
 import numpy as np
+import matplotlib
+matplotlib.use("Agg")  # só salva PNG, sem abrir janela (não precisa de Qt)
 import matplotlib.pyplot as plt
 import spiceypy as spice
 
