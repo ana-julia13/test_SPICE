@@ -1,5 +1,3 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 """
 Created on Mon Oct 12 16:03:15 2026
 
@@ -80,7 +78,7 @@ if INICIO or FIM:
     et0 = spice.str2et(INICIO) if INICIO else spice.wnfetd(cob_juice, 0)[0]
     et1 = spice.str2et(FIM) if FIM else spice.wnfetd(cob_juice, n - 1)[1]
     janela = spice.cell_double(2)
-    spice.wninsd(spice.str2et(INICIO), spice.str2et(FIM), janela)
+    spice.wninsd(et0, et1, janela)
     cob_juice = spice.wnintd(cob_juice, janela)
 
 dados = {}   # nome -> (datas, distâncias, pixels, diâmetro)
@@ -131,17 +129,6 @@ eixos[-1, 0].set_xlabel("data (UTC)")
 fig.tight_layout()
 fig.savefig("distancia_tempo.png", dpi=150)
 
-# ---- km/pixel × tempo ----
-#fig, eixos = plt.subplots(n, 1, figsize=(12, 3 * n), sharex=False, squeeze=False)
-#for eixo, (nome, (datas, dists, pixels, D)) in zip(eixos[:, 0], dados.items()):
-#    eixo.semilogy(datas, dists * IFOV, lw=0.6, color="tab:purple")
-#    eixo.set_title(nome)
-#   eixo.set_ylabel("escala [km/pixel]")
-#    eixo.grid(True, which="both", alpha=0.3)
-#eixos[-1, 0].set_xlabel("data(UTC)")
-#fig.tight_layout()
-#fig.savefig("km_pixel.png", dpi=150)
-
 # ---- pixels × tempo ----
 fig, eixos = plt.subplots(n, 1, figsize=(12, 3 * n), sharex=True, squeeze=False)
 for eixo, (nome, (datas, dists, pixels, D, elong)) in zip(eixos[:, 0], dados.items()):
@@ -158,7 +145,7 @@ fig.savefig("pixels_tempo.png", dpi=150)
 # ----elongacao x tempo ----
 fig, eixos = plt.subplots(n, 1, figsize=(12, 3 * n), sharex=True, squeeze=False)
 for eixo, (nome, (datas, dists, pixels, D, elong)) in zip(eixos[:, 0], dados.items()):
-    eixo.plot(datas, pixels, lw=0.6, color="tab:green")
+    eixo.plot(datas, elong, lw=0.6, color="tab:green")
     eixo.axhline(LIMITE_SOL, color="gray", ls="--", lw=0.8)
     eixo.set_ylim(0, 180)
     eixo.set_title(nome)
