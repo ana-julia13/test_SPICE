@@ -10,6 +10,7 @@ distâncias dos SPKs, raios das luas do PCK e IFOV da JANUS do IK.
 pixels = D / (d × IFOV)
 """
 import os
+import sys
 
 import numpy as np
 import matplotlib
@@ -21,7 +22,10 @@ PASTA_KERNELS = "/pho/figaro/estec/juice/kernels"
 META_KERNEL = "juice_plan.tm"
 INICIO = "2032-06-01"    # início do período de interesse (UTC)
 FIM = "2032-09-01"       # fim do período de interesse (UTC)
-PASSO_S = 600            # passo de amostragem em segundos (600 s = 10 min)
+
+PASSO_GRAFICO_S = 1800   # 1 ponto a cada 30 min no gráfico
+PASSO_BUSCA_S = 600      # passo da busca da distância mínima (10 min)
+BLOCO_BUSCA_S = 30 * 86400  # a busca do mínimo é feita em blocos de 30 dias            # passo de amostragem em segundos (600 s = 10 min)
 
 JUICE_ID = -28
 LUAS = {                 # nome SPICE : código NAIF
@@ -35,28 +39,57 @@ NIVEIS_PX = [1, 10] # linhas de referência nos gráficos de pixels
 LIMITE_SOL = 30    #tem q ver
 # =========================================================================
 
-def carrega_meta_kernel():
-    pasta_mk = os.path.join(PASTA_KERNELS, "mk")
+def carrega_meta_kernel(pasta_kernels, nome_mk):
+    pasta_mk = os.path.join(pasta_kernels, "mk")
+    caminho = os.path.join(pasta_mk, nome_mk)
+    if not os.path.isfile(caminho):
+        print(f"ERRO: meta-kernel não encontrado: {caminho}")
+        if os.path.isdir(pasta_mk):
+            print("Meta-kernels disponíveis em", pasta_mk)
+            for f in sorted(os.listdir(pasta_mk)):
+                if f.endswith(".tm"):
+                    print("   ", f)
+        sys.exit(1)
+
     pasta_original = os.getcwd()
     os.chdir(pasta_mk)
-
     try:
-        spice.furnsh(META_KERNEL)
+        spice.furnsh(nome_mk)
+        arquivos = []
+        for i in range(spice.ktotal("ALL")):
+            arquivo, tipo, _, _ = spice.kdata(i, "ALL")
+            if tipo != "META":
+                arquivos.append(os.path.abspath(arquivo))
     finally:
         os.chdir(pasta_original)
-    return pasta_mk
+
+    spice.kclear()
+    for arquivo in arquivos:
+        spice.furnsh(arquivo)
+    print(f"Meta-kernel carregado: {caminho}")
+    print(f"  ({len(arquivos)} kernels no total)")
 
 
-def cobertura_spk(id_corpo, pasta_mk):
-    """Junta a cobertura de todos os SPKs carregados que têm dados deste corpo."""
+def cobertura_spk(id_corpo):
     cobertura = spice.cell_double(200000)
+    arquivos = []
     for i in range(spice.ktotal("SPK")):
         arquivo, _, _, _ = spice.kdata(i, "SPK")
-        arquivo = os.path.normpath(os.path.join(pasta_mk, arquivo))
         objetos = spice.spkobj(arquivo)
         if id_corpo in [objetos[k] for k in range(spice.card(objetos))]:
             spice.spkcov(arquivo, id_corpo, cobertura)
-    return cobertura
+            arquivos.append(arquivo)
+    return cobertura, arquivos
+
+
+def imprime_janela(titulo, janela, max_linhas=10):
+    n = spice.wncard(janela)
+    print(f"  {titulo}: {n} intervalo(s)")
+    for k in range(min(n, max_linhas)):
+        a, b = spice.wnfetd(janela, k)
+        print(f"    {spice.et2utc(a, 'C', 0)}  ->  {spice.et2utc(b, 'C', 0)}")
+    if n > max_linhas:
+        print(f"    ... (+{n - max_linhas} intervalos)")
 
 def angulo_entre(v1, v2):
     cos = np.sum(v1 * v2, axis=1)/(np.linalg.norm(v1, axis=1) * np.linalg.norm(v2, axis=1))
@@ -94,7 +127,7 @@ for nome, id_lua in LUAS.items():
     datas, dists, elong = [], [], []
     for k in range(spice.wncard(comum)):
         a, b = spice.wnfetd(comum, k)
-        ets = np.arange(a, b, PASSO_S)
+        ets = np.arange(a, b, PASSO_BUSCA_S)
         pos, _ = spice.spkpos(nome, ets, "J2000", "NONE", "JUICE")
         p_lua, _ = spice.spkpos(nome, ets, "J2000", "LT+S", "JUICE")
         p_sol,_ = spice.spkpos("SUN", ets, "J2000", "LT+S", "JUICE")
@@ -143,17 +176,17 @@ fig.tight_layout()
 fig.savefig("pixels_tempo.png", dpi=150)
 
 # ----elongacao x tempo ----
-fig, eixos = plt.subplots(n, 1, figsize=(12, 3 * n), sharex=True, squeeze=False)
-for eixo, (nome, (datas, dists, pixels, D, elong)) in zip(eixos[:, 0], dados.items()):
-    eixo.plot(datas, elong, lw=0.6, color="tab:green")
-    eixo.axhline(LIMITE_SOL, color="gray", ls="--", lw=0.8)
-    eixo.set_ylim(0, 180)
-    eixo.set_title(nome)
-    eixo.set_ylabel("elongacao solar")
-    eixo.grid(True, alpha=0.3)
-eixos[-1, 0].set_xlabel("data (UTC)")
-fig.tight_layout()
-fig.savefig("elong.png", dpi=150)
+#fig, eixos = plt.subplots(n, 1, figsize=(12, 3 * n), sharex=True, squeeze=False)
+#for eixo, (nome, (datas, dists, pixels, D, elong)) in zip(eixos[:, 0], dados.items()):
+#    eixo.plot(datas, elong, lw=0.6, color="tab:green")
+#    eixo.axhline(LIMITE_SOL, color="gray", ls="--", lw=0.8)
+#    eixo.set_ylim(0, 180)
+#    eixo.set_title(nome)
+#    eixo.set_ylabel("elongacao solar")
+#    eixo.grid(True, alpha=0.3)
+#eixos[-1, 0].set_xlabel("data (UTC)")
+#fig.tight_layout()
+#fig.savefig("elong.png", dpi=150)
 
 # ---- pixels × distância ----
 fig, ax = plt.subplots(figsize=(9, 5.5))
