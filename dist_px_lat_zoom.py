@@ -129,7 +129,7 @@ for nome, id_lua in LUAS.items():
     ax_d.semilogy(datas, dists, lw=0.6)
     ax_d.set_title(f"{nome.capitalize()} ({id_lua}) – D ≈ {D:.0f} km")
     ax_d.set_ylabel("distância [km] (log)")
-    ax_d.grid(True, which="both", alpha=0.3)
+    ax_d.grid(True, which="both", axis="y", alpha=0.3)   # linhas menores só no y (log)
 
     ax_p.plot(datas, pixels, lw=0.6, color="tab:orange")
     for p in NIVEIS_PX:
