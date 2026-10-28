@@ -1,9 +1,11 @@
 """
-Uma imagem por lua interna (Metis, Adrastea, Amalthea, Thebe), com 3 painéis
+Uma imagem por lua interna (Metis, Adrastea, Amalthea, Thebe), com 5 painéis
 contra o tempo:
   1) distância JUICE–lua [km]
   2) pixels que a lua ocupa na JANUS = D / (d × IFOV)
   3) latitude sub-S/C [°]
+  4) longitude sub-S/C [°], leste positivo, 0–360
+  5) ângulo de fase α [°] (Sol – lua – JUICE)
 
 Versão para ZOOM (poucos dias em torno de um perijove): passo curto e
 eixo x com dia e hora.
@@ -37,6 +39,8 @@ LUAS = {                 # nome SPICE : código NAIF
 NIVEIS_PX = [1, 10]      # linhas de referência no painel de pixels
 FAIXA_EQ = 10            # |b| <= 10° = "quase equatorial" (a confirmar com o TD)
 LIMITE_B = 20            # |b| >= 20° = tipo B
+LIMITE_FASE = 70         # α <= 70°
+CAMPANHAS = [10, 50]     # fase baixa e fase média (faixa de ±10° em volta)
 # =========================================================================
 
 
@@ -101,7 +105,7 @@ for nome, id_lua in LUAS.items():
     _, raios = spice.bodvrd(nome, "RADII", 3)
     D = 2 * np.mean(raios)                       # diâmetro médio (km)
 
-    datas, dists, lats = [], [], []
+    datas, dists, lats, lons, fases = [], [], [], [], []
     for k in range(spice.wncard(comum)):
         a, b = spice.wnfetd(comum, k)
         ets = np.arange(a, b, PASSO_S)
@@ -112,19 +116,27 @@ for nome, id_lua in LUAS.items():
         datas.extend(spice.et2datetime(ets))
         dists.extend(d)
         lats.extend(np.degrees(np.arcsin(v[:, 2] / d)))
+        lons.extend(np.degrees(np.arctan2(v[:, 1], v[:, 0])) % 360)   # leste, 0–360
+        # phaseq: ângulo Sol–lua–JUICE (vértice na lua), em radianos
+        fases.extend(np.degrees([spice.phaseq(et, nome, "SUN", "JUICE", CORRECAO)
+                                 for et in ets]))
         datas.append(datas[-1])                  # NaN separa lacunas no gráfico
-        dists.append(np.nan)
-        lats.append(np.nan)
+        for lista in (dists, lats, lons, fases):
+            lista.append(np.nan)
 
     dists = np.array(dists)
     lats = np.array(lats)
+    lons = np.array(lons)
+    fases = np.array(fases)
     pixels = D / (dists * IFOV)
 
     i = np.nanargmin(dists)
     print(f"{nome}: mín. {dists[i]:,.0f} km = {pixels[i]:.1f} px, "
-          f"b = {lats[i]:.1f}° em {datas[i]:%Y-%m-%d %H:%M} UTC")
+          f"b = {lats[i]:.1f}°, λ = {lons[i]:.0f}°E, α = {fases[i]:.0f}° "
+          f"em {datas[i]:%Y-%m-%d %H:%M} UTC")
 
-    fig, (ax_d, ax_p, ax_l) = plt.subplots(3, 1, figsize=(12, 8), sharex=True)
+    fig, (ax_d, ax_p, ax_l, ax_lon, ax_f) = plt.subplots(5, 1, figsize=(12, 13),
+                                                         sharex=True)
 
     ax_d.semilogy(datas, dists, lw=0.6)
     ax_d.set_title(f"{nome.capitalize()} ({id_lua}) – D ≈ {D:.0f} km")
@@ -143,13 +155,28 @@ for nome, id_lua in LUAS.items():
     for y in (-LIMITE_B, LIMITE_B):
         ax_l.axhline(y, color="gray", ls=":", lw=0.8)
     ax_l.set_ylabel("lat. sub-S/C [°]")
-    ax_l.set_xlabel("data (UTC)")
     ax_l.grid(True, alpha=0.3)
-    ax_l.margins(x=0)                            # sem espaço antes/depois dos dados
-    ax_l.xaxis.set_major_locator(mdates.HourLocator(byhour=range(0, 24, 6)))
-    ax_l.xaxis.set_major_formatter(mdates.DateFormatter("%d/%m\n%Hh"))
-    ax_l.xaxis.set_minor_locator(mdates.HourLocator())      # tracinho a cada hora
-    for ax in (ax_d, ax_p, ax_l):
+
+    # pontos em vez de linha: a longitude dá a volta 360 -> 0 e a linha riscaria o painel
+    ax_lon.plot(datas, lons, ".", ms=1.5, color="tab:brown")
+    ax_lon.set_ylim(0, 360)
+    ax_lon.set_yticks(range(0, 361, 90))
+    ax_lon.set_ylabel("lon. sub-S/C [°E]")
+    ax_lon.grid(True, alpha=0.3)
+
+    for c in CAMPANHAS:
+        ax_f.axhspan(c - 10, c + 10, color="tab:blue", alpha=0.12)
+    ax_f.axhline(LIMITE_FASE, color="red", ls="--", lw=0.8)
+    ax_f.plot(datas, fases, lw=0.6, color="tab:purple")
+    ax_f.set_ylim(0, 180)
+    ax_f.set_ylabel("fase α [°]")
+    ax_f.set_xlabel("data (UTC)")
+    ax_f.grid(True, alpha=0.3)
+    ax_f.margins(x=0)                            # sem espaço antes/depois dos dados
+    ax_f.xaxis.set_major_locator(mdates.HourLocator(byhour=range(0, 24, 6)))
+    ax_f.xaxis.set_major_formatter(mdates.DateFormatter("%d/%m\n%Hh"))
+    ax_f.xaxis.set_minor_locator(mdates.HourLocator())      # tracinho a cada hora
+    for ax in (ax_d, ax_p, ax_l, ax_lon, ax_f):
         ax.grid(True, which="major", axis="x", alpha=0.6)
 
     fig.tight_layout()
