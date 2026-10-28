@@ -1,29 +1,35 @@
+"""
+Distância entre a JUICE e as luas internas de Júpiter, ao longo da missão.
+
+"""
+
 import os
 import sys
 
 import numpy as np
-import matplotlib
-matplotlib.use("Agg")
+import matplotlib.dates as mdates
 import matplotlib.pyplot as plt
-from matplotlib.ticker import FuncFormatter, LogLocator, NullFormatter
 import spiceypy as spice
 
+# CONFIG
 # Pasta "kernels" da JUICE (a que tem ck/, fk/, lsk/, mk/, spk/ ...)
 PASTA_KERNELS = "/pho/figaro/estec/juice/kernels"
 
-# Meta-kernel a usar (fica dentro de PASTA_KERNELS/mk).
+# juice_plan.tm = trajetória planejada para a missão inteira.
+# Se quiser um cenário "crema" específico, troque o nome aqui
 META_KERNEL = "juice_plan.tm"
 
-# Período: None = usa todo o período em que há dados.
-# Ou datas, ex.: INICIO = "2031-07-01", FIM = "2035-12-31"
-INICIO = "2032-02-01"
-FIM = "2032-10-01"
+# Período: None = usa TODO o período em que há dados (a missão inteira).
+# Ou coloque datas, ex.: INICIO = "2031-07-01", FIM = "2035-12-31"
+INICIO = "2031-03-01"
+FIM = "2034-05-01"
 
 PASSO_GRAFICO_S = 1800   # 1 ponto a cada 30 min no gráfico
 PASSO_BUSCA_S = 600      # passo da busca da distância mínima (10 min)
+BLOCO_BUSCA_S = 30 * 86400  # a busca do mínimo é feita em blocos de 30 dias
 
 JUICE = "JUICE"          # código NAIF da JUICE: -28
-LUAS = [                 # (nome SPICE, código NAIF)
+LUAS = [                 # (nome SPICE, código NAIF), na ordem dos gráficos
     ("METIS", 516),
     ("ADRASTEA", 515),
     ("AMALTHEA", 505),
@@ -32,11 +38,7 @@ LUAS = [                 # (nome SPICE, código NAIF)
 JUICE_ID = -28
 
 PASTA_SAIDA = "resultados"
-
-# Unidade da distância nos gráficos: "km" ou "RJ"
-UNIDADE = "km"
-
-RAIO_JUPITER_KM = 71492.0    # raio equatorial
+# =========================================================================
 
 
 def carrega_meta_kernel(pasta_kernels, nome_mk):
@@ -55,20 +57,26 @@ def carrega_meta_kernel(pasta_kernels, nome_mk):
     os.chdir(pasta_mk)
     try:
         spice.furnsh(nome_mk)
+        arquivos = []
+        for i in range(spice.ktotal("ALL")):
+            arquivo, tipo, _, _ = spice.kdata(i, "ALL")
+            if tipo != "META":
+                arquivos.append(os.path.abspath(arquivo))
     finally:
         os.chdir(pasta_original)
+
+    spice.kclear()
+    for arquivo in arquivos:
+        spice.furnsh(arquivo)
     print(f"Meta-kernel carregado: {caminho}")
-    print(f"  ({spice.ktotal('ALL')} kernels no total)")
-    return pasta_mk
+    print(f"  ({len(arquivos)} kernels no total)")
 
 
-def cobertura_spk(id_corpo, pasta_mk):
+def cobertura_spk(id_corpo):
     cobertura = spice.cell_double(200000)
     arquivos = []
     for i in range(spice.ktotal("SPK")):
         arquivo, _, _, _ = spice.kdata(i, "SPK")
-        # caminhos do meta-kernel são relativos à pasta mk/ (ex.: ../spk/x.bsp)
-        arquivo = os.path.normpath(os.path.join(pasta_mk, arquivo))
         objetos = spice.spkobj(arquivo)
         if id_corpo in [objetos[k] for k in range(spice.card(objetos))]:
             spice.spkcov(arquivo, id_corpo, cobertura)
@@ -87,16 +95,29 @@ def imprime_janela(titulo, janela, max_linhas=10):
 
 
 def distancia_minima(nome_lua, janela):
-    max_intervalos = 200000      # espaço de trabalho: precisa caber todos os
-                                 # mínimos locais (um a cada órbita da lua)
-    resultado = spice.cell_double(2 * max_intervalos)
-    spice.gfdist(nome_lua, "NONE", JUICE, "ABSMIN", 0.0, 0.0,
-                 PASSO_BUSCA_S, max_intervalos, janela, resultado)
-    if spice.wncard(resultado) == 0:
+    # espaço suficiente mesmo que houvesse um mínimo a cada passo de busca
+    n_max = int(BLOCO_BUSCA_S / PASSO_BUSCA_S) + 10
+    et_min, d_min = None, np.inf
+    for k in range(spice.wncard(janela)):
+        a, b = spice.wnfetd(janela, k)
+        inicio = a
+        while inicio < b:
+            fim = min(inicio + BLOCO_BUSCA_S, b)
+            bloco = spice.cell_double(2)
+            spice.wninsd(inicio, fim, bloco)
+            resultado = spice.cell_double(2 * n_max)
+            spice.gfdist(nome_lua, "NONE", JUICE, "ABSMIN", 0.0, 0.0,
+                         PASSO_BUSCA_S, n_max, bloco, resultado)
+            if spice.wncard(resultado) > 0:
+                et, _ = spice.wnfetd(resultado, 0)
+                pos, _ = spice.spkpos(nome_lua, et, "J2000", "NONE", JUICE)
+                d = spice.vnorm(pos)
+                if d < d_min:
+                    et_min, d_min = et, d
+            inicio = fim
+    if et_min is None:
         return None, None
-    et_min, _ = spice.wnfetd(resultado, 0)
-    pos, _ = spice.spkpos(nome_lua, et_min, "J2000", "NONE", JUICE)
-    return et_min, spice.vnorm(pos)
+    return et_min, d_min
 
 
 def serie_distancias(nome_lua, janela):
@@ -116,55 +137,29 @@ def serie_distancias(nome_lua, janela):
     return np.array(ets_todos), np.array(dists_todos)
 
 
-def raio_jupiter():
-    """Raio equatorial de Júpiter em km (do PCK carregado, se tiver)."""
-    try:
-        _, raios = spice.bodvrd("JUPITER", "RADII", 3)
-        return raios[0]
-    except spice.utils.exceptions.SpiceyError:
-        return RAIO_JUPITER_KM
-
-
-def grafico(eixo, nome, datas, dists, et_min, d_min, unidade=None):
-    """Desenha a distância JUICE–lua. unidade = "km" ou "RJ" (padrão: UNIDADE)."""
-    unidade = unidade or UNIDADE
-    if unidade.upper() == "RJ":
-        fator, rotulo, fmt = raio_jupiter(), "RJ", ",.2f"
-    elif unidade.lower() == "km":
-        fator, rotulo, fmt = 1.0, "km", ",.0f"
-    else:
-        sys.exit(f'ERRO: UNIDADE deve ser "km" ou "RJ" (está "{unidade}")')
-
-    eixo.semilogy(datas, np.asarray(dists) / fator, lw=0.6)
+def grafico(eixo, nome, datas, dists, et_min, d_min):
+    eixo.semilogy(datas, dists, lw=0.6)
     if et_min is not None:
         data_min = spice.et2datetime(et_min)
-        eixo.plot(data_min, d_min / fator, "ro", ms=5,
-                  label=f"mínimo: {d_min / fator:{fmt}} {rotulo} em "
-                        f"{data_min:%Y-%m-%d %H:%M} UTC")
+        eixo.plot(data_min, d_min, "ro", ms=5,
+                  label=f"min: {d_min:,.0f} km em {data_min:%Y-%m-%d %H:%M} UTC")
         eixo.legend(loc="upper right", fontsize=8)
-    # Eixo x começa no primeiro ponto e termina no último (sem espaço em branco)
-    eixo.set_xlim(datas[0], datas[-1])
-    # números normais no eixo y (em vez de 2.3×10¹)
-    fmt_eixo = ",.0f" if rotulo == "km" else "g"
-    eixo.yaxis.set_major_locator(LogLocator(subs=(1, 2, 5)))   # 1, 2, 5, 10, 20...
-    eixo.yaxis.set_major_formatter(FuncFormatter(lambda v, _: f"{v:{fmt_eixo}}"))
-    # Com menos de uma década no eixo, rotula também os ticks menores;
-    # com mais, só os principais (senão os números se amontoam)
-    if np.nanmax(dists) / np.nanmin(dists) < 10:
-        eixo.yaxis.set_minor_formatter(FuncFormatter(lambda v, _: f"{v:{fmt_eixo}}"))
-    else:
-        eixo.yaxis.set_minor_formatter(NullFormatter())
-    eixo.set_title(f"Distância JUICE – {nome.capitalize()}")
-    eixo.set_ylabel(f"distância [{rotulo}] (escala log)")
+    eixo.set_title(f"Distance JUICE – {nome.capitalize()}")
+    eixo.set_ylabel("distance [km] (log)")
     eixo.grid(True, which="both", alpha=0.3)
+    eixo.margins(x=0)    # eixo x começa no 1º ponto e termina no último (sem folga)
+    datas_eixo = mdates.AutoDateLocator()   # datas compactas, sem rótulos sobrepostos
+    eixo.xaxis.set_major_locator(datas_eixo)
+    eixo.xaxis.set_major_formatter(mdates.ConciseDateFormatter(datas_eixo))
+
 
 
 def main():
-    pasta_mk = carrega_meta_kernel(PASTA_KERNELS, META_KERNEL)
+    carrega_meta_kernel(PASTA_KERNELS, META_KERNEL)
     os.makedirs(PASTA_SAIDA, exist_ok=True)
 
     print("\n=== JUICE ===")
-    cob_juice, arq_juice = cobertura_spk(JUICE_ID, pasta_mk)
+    cob_juice, arq_juice = cobertura_spk(JUICE_ID)
     if not arq_juice:
         sys.exit("ERRO: nenhum SPK carregado tem a trajetória da JUICE.")
     imprime_janela("cobertura da trajetória", cob_juice)
@@ -181,7 +176,7 @@ def main():
     resultados = []
     for nome, id_lua in LUAS:
         print(f"\n=== {nome} (NAIF {id_lua}) ===")
-        cob_lua, arq_lua = cobertura_spk(id_lua, pasta_mk)
+        cob_lua, arq_lua = cobertura_spk(id_lua)
         if not arq_lua:
             print("  NENHUM SPK carregado tem a efeméride desta lua -> pulando.")
             print("  (Carregue um SPK de satélites de Júpiter, ex.: jup365.bsp)")
@@ -205,11 +200,11 @@ def main():
         # Gráfico individual
         fig, eixo = plt.subplots(figsize=(12, 4))
         grafico(eixo, nome, datas, dists, et_min, d_min)
-        eixo.set_xlabel("data (UTC)")
+        eixo.set_xlabel("date (UTC)")
         fig.tight_layout()
         arq_png = os.path.join(PASTA_SAIDA, f"distancia_juice_{nome.lower()}.png")
         fig.savefig(arq_png, dpi=150)
-        print(f"  gráfico salvo: {arq_png}")
+
 
         # Tabela CSV (data UTC, distância em km)
         arq_csv = os.path.join(PASTA_SAIDA, f"distancia_juice_{nome.lower()}.csv")
@@ -218,7 +213,6 @@ def main():
             for et, d in zip(ets, dists):
                 if np.isfinite(d):
                     f.write(f"{spice.et2utc(et, 'ISOC', 0)},{d:.3f}\n")
-        print(f"  tabela salva:  {arq_csv}")
 
         resultados.append((nome, datas, dists, et_min, d_min))
 
@@ -232,7 +226,6 @@ def main():
         fig.tight_layout()
         arq_png = os.path.join(PASTA_SAIDA, "distancia_juice_todas.png")
         fig.savefig(arq_png, dpi=150)
-        print(f"\nGráfico com todas as luas: {arq_png}")
 
     spice.kclear()
 
