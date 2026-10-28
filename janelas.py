@@ -1,19 +1,21 @@
 """
-Janelas de observação A (P7 do guia): uma imagem por lua, com uma barra por
-critério (barra preenchida = critério OK) e a última linha = TODOS ao mesmo
-tempo, por pelo menos DURACAO_MIN_S. As janelas também vão para um CSV.
+Janelas de observação: uma imagem por lua, de cima para baixo:
+  1) distância JUICE–lua [km]
+  2) pixels na JANUS = D / (d × IFOV)
+  3) latitude sub-S/C [°]
+  4) longitude sub-S/C [°], leste positivo, 0–360
+  5) ângulo de fase α [°], com o limite em vermelho
+  6) barras = o PROBLEMA acontece (ocultada, eclipse, perto de Júpiter, ...)
+  7) JANELA = nenhum problema por >= DURACAO_MIN_S
+A distância NÃO entra na janela (só aparece nos painéis 1 e 2).
+As janelas também vão para um CSV.
 
 Período: INICIO/FIM abaixo, ou na linha de comando:
     python janelas.py "2032-03-10 00:00" "2032-03-14 00:00"
 
-Critérios (obs. A):
-  distância   <= limite da lua
-  fase α      <= 70°
-  latitude    |b| <= 10° (quase equatorial, a confirmar com o TD)
-  Júpiter     >= 10 px do limbo
-  galileanas  >= 10 px do limbo
-  não ocultada (Júpiter/galileana na frente, vista da JUICE)
-  não eclipsada (sombra de Júpiter)
+Fase: o limite depende do hemisfério que a JUICE vê (sinal da latitude sub-S/C).
+  70° sul / 110° norte = observação B (Parametrization v02, Matrix V03 B-1/B-2).
+  Observação A é α <= 70° sempre -> coloque FASE_MAX_NORTE = 70.
 """
 import os
 import sys
@@ -39,15 +41,16 @@ CORRECAO_OCC = "LT"      # occult não aceita "+S"
 
 JUICE_ID = -28
 JANUS_ID = -28200
-LUAS = {                 # nome SPICE : (código NAIF, distância máxima em km)
-    "METIS": (516, 1.0e6),
-    "ADRASTEA": (515, 0.7e6),
-    "AMALTHEA": (505, 1.1e6),
-    "THEBE": (514, 1.1e6),
+LUAS = {                 # nome SPICE : (código NAIF, pixels mínimos da obs. A)
+    "METIS": (516, 3),
+    "ADRASTEA": (515, 2),
+    "AMALTHEA": (505, 10),
+    "THEBE": (514, 6),
 }
 GALILEANAS = ["IO", "EUROPA", "GANYMEDE", "CALLISTO"]
-LIMITE_FASE = 70         # α <= 70°
-FAIXA_EQ = 10            # |b| <= 10°
+FASE_MAX_SUL = 70        # α máximo quando a lat. sub-S/C é negativa (sul)
+FASE_MAX_NORTE = 110     # α máximo quando a lat. sub-S/C é positiva (norte)
+FAIXA_EQ = 10            # |b| <= 10° = "quase equatorial" (a confirmar com o TD)
 LIMITE_PX = 10           # >= 10 px de qualquer limbo
 # =========================================================================
 
@@ -143,14 +146,13 @@ janela = spice.cell_double(2)
 spice.wninsd(spice.str2et(INICIO), spice.str2et(FIM), janela)
 cob_juice = spice.wnintd(cob_juice, janela)
 
-for nome, (id_lua, dist_max) in LUAS.items():
+for nome, (id_lua, px_min) in LUAS.items():
     cob_lua, _ = cobertura_spk(id_lua)
     comum = spice.wnintd(cob_juice, cob_lua)
     if spice.wncard(comum) == 0:
         print(f"{nome}: sem cobertura em comum com a JUICE no período")
         continue
-    raios = spice.bodvrd(nome, "RADII", 3)[1]
-    R_lua = np.mean(raios)
+    R_lua = np.mean(spice.bodvrd(nome, "RADII", 3)[1])
     D = 2 * R_lua
 
     ets = np.concatenate([np.arange(*spice.wnfetd(comum, k), PASSO_S)
@@ -164,6 +166,7 @@ for nome, (id_lua, dist_max) in LUAS.items():
     lats = np.degrees(np.arcsin(v[:, 2] / dists))
     lons = np.degrees(np.arctan2(v[:, 1], v[:, 0])) % 360   # leste, 0–360
     fases = np.degrees([spice.phaseq(et, nome, "SUN", "JUICE", CORRECAO) for et in ets])
+    fase_max = np.where(lats < 0, FASE_MAX_SUL, FASE_MAX_NORTE)
     sep_jup = separacao_px(nome, R_lua, "JUPITER", R_JUP, ets)
     sep_gal = np.min([separacao_px(nome, R_lua, g, R_GAL[g], ets)
                       for g in GALILEANAS], axis=0)
@@ -171,17 +174,16 @@ for nome, (id_lua, dist_max) in LUAS.items():
     for g in GALILEANAS:
         occ |= ocultada(nome, g, ets)
 
-    criterios = {                                         # True = critério OK
-        f"distância ≤ {dist_max / 1e6:.1f}e6 km": dists <= dist_max,
-        f"fase α ≤ {LIMITE_FASE}°": fases <= LIMITE_FASE,
-        f"|lat| ≤ {FAIXA_EQ}°": np.abs(lats) <= FAIXA_EQ,
-        f"≥ {LIMITE_PX} px do limbo (Júpiter)": sep_jup >= LIMITE_PX,
-        f"≥ {LIMITE_PX} px das galileanas": sep_gal >= LIMITE_PX,
-        "não ocultada": ~occ,
-        "não eclipsada": ~eclipse(nome, ets),
+    problemas = {                                         # True = problema acontece
+        "ocultada": occ,
+        "eclipse": eclipse(nome, ets),
+        f"perto de Júpiter (< {LIMITE_PX} px)": sep_jup < LIMITE_PX,
+        f"perto de galileana (< {LIMITE_PX} px)": sep_gal < LIMITE_PX,
+        f"fase acima de {FASE_MAX_SUL}° S / {FASE_MAX_NORTE}° N": fases > fase_max,
+        f"|lat| > {FAIXA_EQ}°": np.abs(lats) > FAIXA_EQ,
     }
-    todos = np.all(list(criterios.values()), axis=0)
-    janelas = [(i, j) for i, j in intervalos(ets, todos)
+    livre = ~np.any(list(problemas.values()), axis=0)
+    janelas = [(i, j) for i, j in intervalos(ets, livre)
                if ets[j] - ets[i] >= DURACAO_MIN_S]
 
     # ---- lista e CSV das janelas ----
@@ -199,33 +201,69 @@ for nome, (id_lua, dist_max) in LUAS.items():
             f.write(f"{ini},{fim},{dur:.0f},{dists[m]:.0f},{pixels[m]:.1f},"
                     f"{fases[m]:.1f},{lats[m]:.1f},{lons[m]:.1f},{sep_min:.0f}\n")
             print(f"    {ini} -> {fim} ({dur:4.0f} min) | {pixels[m]:5.1f} px | "
-                  f"α = {fases[m]:4.1f}° | b = {lats[m]:5.1f}° | λ = {lons[m]:5.1f}°E")
+                  f"α = {fases[m]:5.1f}° | b = {lats[m]:5.1f}° | λ = {lons[m]:5.1f}°E")
     print(f"  tabela salva: {arq_csv}")
 
-    # ---- barras × tempo ----
+    # ---- figura: 5 painéis de linha + barras + janela ----
     datas = spice.et2datetime(ets)
-    linhas = list(criterios.items())
+    fig, eixos = plt.subplots(7, 1, figsize=(12, 17), sharex=True,
+                              gridspec_kw={"height_ratios": [1, 1, 1, 1, 1, 1.4, 0.35]})
+    ax_d, ax_p, ax_l, ax_lon, ax_f, ax_b, ax_j = eixos
+
+    ax_d.semilogy(datas, dists, lw=0.6)
+    ax_d.set_title(f"{nome.capitalize()} ({id_lua}) – D ≈ {D:.0f} km ({META_KERNEL})")
+    ax_d.set_ylabel("distância [km] (log)")
+    ax_d.grid(True, which="both", axis="y", alpha=0.3)   # linhas menores só no y (log)
+
+    ax_p.plot(datas, pixels, lw=0.6, color="tab:orange")
+    ax_p.axhline(px_min, color="gray", ls="--", lw=0.8)
+    ax_p.set_ylabel("pixels")
+    ax_p.set_ylim(bottom=0)
+    ax_p.grid(True, alpha=0.3)
+
+    ax_l.plot(datas, lats, lw=0.6, color="tab:green")
+    ax_l.axhspan(-FAIXA_EQ, FAIXA_EQ, color="tab:green", alpha=0.15)
+    ax_l.axhline(0, color="gray", lw=0.6)
+    ax_l.set_ylabel("lat. sub-S/C [°]")
+    ax_l.grid(True, alpha=0.3)
+
+    # pontos em vez de linha: a longitude dá a volta 360 -> 0 e a linha riscaria o painel
+    ax_lon.plot(datas, lons, ".", ms=1.5, color="tab:brown")
+    ax_lon.set_ylim(0, 360)
+    ax_lon.set_yticks(range(0, 361, 90))
+    ax_lon.set_ylabel("lon. sub-S/C [°E]")
+    ax_lon.grid(True, alpha=0.3)
+
+    ax_f.plot(datas, fases, lw=0.6, color="tab:purple")
+    ax_f.plot(datas, fase_max, color="red", ls="--", lw=0.8)   # muda com o hemisfério
+    ax_f.set_ylim(0, 180)
+    ax_f.set_ylabel("fase α [°]")
+    ax_f.grid(True, alpha=0.3)
+
+    for k, (rotulo, m) in enumerate(problemas.items()):
+        y = len(problemas) - 1 - k                        # primeira linha em cima
+        ax_b.fill_between(datas, y - 0.35, y + 0.35, where=m,
+                          color="tab:red", alpha=0.8, lw=0)
+    ax_b.set_yticks(range(len(problemas)))
+    ax_b.set_yticklabels(list(problemas)[::-1], fontsize=8)
+    ax_b.set_ylim(-0.6, len(problemas) - 0.4)
+    ax_b.set_ylabel("barra = acontece", fontsize=8)
+
     mask_janelas = np.zeros(len(ets), bool)
     for i, j in janelas:
         mask_janelas[i:j + 1] = True
-    linhas.append((f"TODOS → JANELA (≥ {DURACAO_MIN_S / 60:.0f} min)", mask_janelas))
+    ax_j.fill_between(datas, 0, 1, where=mask_janelas, color="tab:green", lw=0)
+    ax_j.set_yticks([0.5])
+    ax_j.set_yticklabels([f"JANELA (≥ {DURACAO_MIN_S / 60:.0f} min)"], fontsize=8)
+    ax_j.set_ylim(0, 1)
 
-    fig, eixo = plt.subplots(figsize=(12, 4.5))
-    for k, (rotulo, ok) in enumerate(linhas):
-        y = len(linhas) - 1 - k                           # primeira linha em cima
-        cor = "tab:green" if k == len(linhas) - 1 else "cornflowerblue"
-        eixo.fill_between(datas, y - 0.35, y + 0.35, where=ok, color=cor, lw=0)
-    eixo.set_yticks(range(len(linhas)))
-    eixo.set_yticklabels([r for r, _ in linhas][::-1], fontsize=8)
-    eixo.set_ylim(-0.6, len(linhas) - 0.4)
-    eixo.set_title(f"{nome.capitalize()} ({id_lua}) – barra = critério OK "
-                   f"({META_KERNEL})", fontsize=10)
-    eixo.grid(True, axis="x", alpha=0.6)
-    eixo.margins(x=0)
-    datas_eixo = mdates.AutoDateLocator()               # serve p/ horas ou meses
-    eixo.xaxis.set_major_locator(datas_eixo)
-    eixo.xaxis.set_major_formatter(mdates.ConciseDateFormatter(datas_eixo))
-    eixo.set_xlabel("data (UTC)")
+    for ax in eixos:
+        ax.grid(True, which="major", axis="x", alpha=0.6)
+    ax_j.margins(x=0)                                     # sem espaço antes/depois dos dados
+    datas_eixo = mdates.AutoDateLocator()                 # serve p/ horas ou meses
+    ax_j.xaxis.set_major_locator(datas_eixo)
+    ax_j.xaxis.set_major_formatter(mdates.ConciseDateFormatter(datas_eixo))
+    ax_j.set_xlabel("data (UTC)")
     fig.tight_layout()
     arq = f"janelas_{nome.lower()}.png"
     fig.savefig(arq, dpi=150)
