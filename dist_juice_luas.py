@@ -13,7 +13,6 @@ SAIDA = os.path.abspath("resultados")
 
 os.makedirs(SAIDA, exist_ok=True)
 os.chdir(os.path.dirname(MK))  # o meta-kernel usa caminhos relativos à pasta mk/
-spice.kclear()
 spice.furnsh(MK)
 
 
