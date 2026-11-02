@@ -16,6 +16,7 @@ FAIXA_EQ, LIMITE_B = 10, 20
 PNG = os.path.abspath("lat_lon_subsc_tempo.png")
 
 os.chdir(os.path.dirname(MK))
+spice.kclear()
 spice.furnsh(MK)
 
 

@@ -13,6 +13,7 @@ NIVEIS_PX = [1, 10]
 PNG = os.path.abspath("pixels_tempo.png")
 
 os.chdir(os.path.dirname(MK))
+spice.kclear()
 spice.furnsh(MK)
 IFOV = spice.gdpool("INS-28200_IFOV", 0, 1)[0]
 print(f"IFOV da JANUS (IK): {IFOV * 1e6:.2f} µrad")

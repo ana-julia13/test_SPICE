@@ -16,6 +16,7 @@ CAMPANHAS = [10, 50]
 PNG = os.path.abspath("fase_tempo.png")
 
 os.chdir(os.path.dirname(MK))
+spice.kclear()
 spice.furnsh(MK)
 
 
