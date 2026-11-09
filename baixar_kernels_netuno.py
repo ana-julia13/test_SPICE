@@ -38,7 +38,8 @@ def baixar(url: str, destino: Path) -> None:
     tmp = destino.with_suffix(destino.suffix + ".part")
     urllib.request.urlretrieve(url, tmp)
     tmp.rename(destino)
-    print(f" ok ({destino.stat().st_size / 1e6:.1f} MB)")
+    tam = destino.stat().st_size
+    print(f" ok ({tam / 1e6:.1f} MB)" if tam >= 1e6 else f" ok ({tam / 1e3:.1f} KB)")
 
 
 carregar = []
