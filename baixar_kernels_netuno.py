@@ -18,8 +18,19 @@ BASE = "https://naif.jpl.nasa.gov/pub/naif/generic_kernels"
 KERNELS = {
     "lsk": [f"{BASE}/lsk/naif0012.tls"],               # segundos bissextos (tempo)
     "pck": [f"{BASE}/pck/pck00011.tpc"],               # tamanho/rotacao dos corpos
+    # ORDEM IMPORTA: se dois arquivos tem o mesmo corpo no mesmo instante,
+    # o SPICE usa o carregado por ULTIMO. Por isso os "xl" (cobertura longa,
+    # usados so como reserva fora do periodo dos outros) e o nep098 (mais
+    # antigo) vem primeiro, e os mais novos (nep097/104/105) por ultimo.
     "spk": [
         f"{BASE}/spk/planets/de440s.bsp",              # Sol, Terra, baricentro de Netuno (8)
+        f"{BASE}/spk/satellites/nep097xl-899.bsp",     # Netuno (899), cobertura longa
+        f"{BASE}/spk/satellites/nep097xl-801.bsp",     # Tritao (801), cobertura longa
+        f"{BASE}/spk/satellites/nep101xl-802.bsp",     # Nereida (802), cobertura longa
+        f"{BASE}/spk/satellites/nep101xl.bsp",         # cobertura longa (confira com brief)
+        f"{BASE}/spk/satellites/nep098_part-1.bsp",    # irregulares (precisa do nameid)
+        f"{BASE}/spk/satellites/nep098_part-2.bsp",
+        f"{BASE}/spk/satellites/nep098_part-3.bsp",
         f"{BASE}/spk/satellites/nep097.bsp",           # Netuno (899), Tritao e luas internas
         f"{BASE}/spk/satellites/nep104.bsp",           # irregulares externas
         f"{BASE}/spk/satellites/nep105.bsp",           # Nereida
@@ -30,16 +41,23 @@ KERNELS = {
 raiz = Path(__file__).resolve().parent / "kernels"
 
 
-def baixar(url: str, destino: Path) -> None:
+def baixar(url: str, destino: Path) -> bool:
+    """Baixa o arquivo. Retorna True se ele estiver disponivel no fim."""
     if destino.exists() and destino.stat().st_size > 0:
         print(f"  ja existe: {destino.name}")
-        return
+        return True
     print(f"  baixando:  {destino.name} ...", end="", flush=True)
     tmp = destino.with_suffix(destino.suffix + ".part")
-    urllib.request.urlretrieve(url, tmp)
-    tmp.rename(destino)
+    try:
+        urllib.request.urlretrieve(url, tmp)
+    except Exception as e:  # 404, queda de conexao etc.
+        print(f" FALHOU ({e}) -- pulando, nao vai entrar no meta-kernel")
+        tmp.unlink(missing_ok=True)
+        return False
+    tmp.replace(destino)
     tam = destino.stat().st_size
     print(f" ok ({tam / 1e6:.1f} MB)" if tam >= 1e6 else f" ok ({tam / 1e3:.1f} KB)")
+    return True
 
 
 carregar = []
@@ -47,8 +65,8 @@ for pasta, urls in KERNELS.items():
     (raiz / pasta).mkdir(parents=True, exist_ok=True)
     for url in urls:
         nome = url.rsplit("/", 1)[1]
-        baixar(url, raiz / pasta / nome)
-        carregar.append(f"$KERNELS/{pasta}/{nome}")
+        if baixar(url, raiz / pasta / nome):
+            carregar.append(f"$KERNELS/{pasta}/{nome}")
 
 
 def quebrar(texto: str, n: int = 60) -> list[str]:
