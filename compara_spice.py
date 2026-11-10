@@ -21,6 +21,8 @@ converte em elementos osculadores com oscltx. Gera em PASTA_SAIDA:
 Uso:
   python3 compara_spice.py                              (usa a CONFIGURAÇÃO)
   python3 compara_spice.py oscelt_planetIAU.out --lua METIS
+
+As funções daqui também são usadas pelo compara_tres.py.
 """
 
 import argparse
@@ -57,7 +59,8 @@ PASTA_SAIDA = "saida_comparacao"
 # =========================================================================
 
 ROTULOS = ["a [km]", "e", "i [°]", "Ω [°]", "ω [°]", "M [°]"]
-ANGULARES = [2, 3, 4, 5]  # colunas de ângulo em ROTULOS
+NOMES_CSV = ["a_km", "e", "i_deg", "Omega_deg", "omega_deg", "M_deg"]
+ANGULARES = [3, 4, 5]  # colunas 0–360 (Ω, ω, M) em ROTULOS
 
 PASTA_DE_CARGA = {}  # nome usado no furnsh -> pasta de onde foi carregado
 
@@ -119,6 +122,61 @@ def formata_eixo(eixo):
     eixo.grid(alpha=0.3)
 
 
+def identifica_lua(lua):
+    """Nome SPICE ou código NAIF -> (código, nome)."""
+    try:
+        id_lua = int(lua)
+    except ValueError:
+        id_lua = spice.bods2c(str(lua).upper())
+    return id_lua, spice.bodc2n(id_lua)
+
+
+def matriz_frame(frame, et_frame):
+    """Matriz J2000 -> frame da comparação."""
+    if frame == "EQUADOR_JUPITER":
+        print(f"frame: equador de Júpiter congelado em {spice.et2utc(et_frame, 'C', 3)} UTC")
+        return matriz_equador_jupiter(et_frame)
+    if frame == "J2000":
+        return np.eye(3)
+    raise ValueError(f"FRAME desconhecido: {frame}")
+
+
+def calcula_mu(id_lua, mu_fixo=None, somar_gm_lua=True):
+    """μ da conversão estado <-> elementos (km³/s²)."""
+    if mu_fixo is not None:
+        return mu_fixo
+    gm_jup = gm_corpo(599)
+    if gm_jup == 0.0:
+        raise RuntimeError("GM de Júpiter não encontrado: carregue gm_de440.tpc")
+    return gm_jup + (gm_corpo(id_lua) if somar_gm_lua else 0.0)
+
+
+def na_cobertura(ets, id_lua, nome):
+    """Máscara dos ETs cobertos pelo SPK da lua (avisa se faltar algum)."""
+    cobertura = cobertura_spk(id_lua)
+    dentro = np.array([spice.wnelmd(et, cobertura) for et in ets])
+    if not dentro.any():
+        raise RuntimeError(f"{nome}: nenhum ET está na cobertura do SPK")
+    if not dentro.all():
+        print(f"{nome}: {np.count_nonzero(~dentro)} instantes fora da cobertura do SPK, ignorados")
+    return dentro
+
+
+def converte_angulos(tabela, angulos, rotulo):
+    """Passa i, Ω, ω, M para graus (Ω, ω, M em 0–360). 'auto' decide pelo M:
+    em graus ele vai até 360, em radianos até 2π."""
+    tabela = tabela.copy()
+    if angulos == "auto":
+        angulos = "radianos" if np.nanmax(np.abs(tabela[:, 5])) <= 2 * np.pi + 1e-6 else "graus"
+        print(f"ângulos do {rotulo}: {angulos} (detectado pelo M)")
+    if angulos == "radianos":
+        tabela[:, 2:] = np.degrees(tabela[:, 2:])
+    elif angulos != "graus":
+        raise ValueError(f"ANGULOS desconhecido: {angulos}")
+    tabela[:, 3:] %= 360.0
+    return tabela
+
+
 def le_integrador(arquivo):
     """Lê o arquivo do integrador. Devolve as datas (texto), o ET e a tabela
     [a, e, i, Ω, ω, M], com os ângulos ainda na unidade do arquivo.
@@ -144,158 +202,137 @@ def le_integrador(arquivo):
     return datas, numeros[:, 0], numeros[:, 2:8]
 
 
-def diferenca_angular(a, b):
-    """a − b em graus, entre −180 e 180."""
-    return (a - b + 180.0) % 360.0 - 180.0
+def elementos_spice(ets, id_lua, R, mu):
+    """Elementos osculadores [a, e, i, Ω, ω, M] (graus) e posição (km) da lua
+    no SPICE, nos ETs dados, no frame da matriz R."""
+    estados, _ = spice.spkezr(str(id_lua), ets, "J2000", "NONE", "JUPITER")
+    tabela = np.empty((len(ets), 6))
+    pos = np.empty((len(ets), 3))
+    for k, (et, s) in enumerate(zip(ets, np.asarray(estados))):
+        s_rot = np.concatenate([R @ s[:3], R @ s[3:]])
+        el = spice.oscltx(s_rot, et, mu)
+        tabela[k] = [el[9], el[1], np.degrees(el[2]),
+                     np.degrees(el[3]) % 360.0, np.degrees(el[4]) % 360.0,
+                     np.degrees(el[5]) % 360.0]
+        pos[k] = s_rot[:3]
+    return tabela, pos
 
 
-# --------------------------- argumentos -----------------------------------
-parser = argparse.ArgumentParser(description="Compara elementos de um integrador com o SPICE.")
-parser.add_argument("arquivo", nargs="?", default=ARQUIVO_INTEGRADOR,
-                    help="saída do integrador (padrão: ARQUIVO_INTEGRADOR)")
-parser.add_argument("--lua", default=LUA, help="nome SPICE ou código NAIF (padrão: LUA)")
-args = parser.parse_args()
+def posicoes(tabela, ets, mu):
+    """Posição (km) refeita a partir dos elementos [a, e, i, Ω, ω, M] (graus)."""
+    pos = np.empty((len(ets), 3))
+    for k, (et, (a, e, i, om, w, m)) in enumerate(zip(ets, tabela)):
+        elts = [a * (1.0 - e), e, np.radians(i), np.radians(om), np.radians(w),
+                np.radians(m), et, mu]
+        pos[k] = spice.conics(elts, et)[:3]
+    return pos
 
-carrega_kernels(KERNELS)
 
-try:
-    id_lua = int(args.lua)
-except ValueError:
-    id_lua = spice.bods2c(args.lua.upper())
-nome_lua = spice.bodc2n(id_lua)
+def diferencas(tabela, referencia):
+    """tabela − referência; nos ângulos Ω, ω, M, entre −180° e 180°."""
+    dif = tabela - referencia
+    dif[:, ANGULARES] = (dif[:, ANGULARES] + 180.0) % 360.0 - 180.0
+    return dif
 
-datas, ets, integ = le_integrador(args.arquivo)
-print(f"{args.arquivo}: {len(ets)} linhas, de {datas[0]} a {datas[-1]}")
 
-# Unidade dos ângulos: em graus, M percorre até 360; em radianos, até 2π
-angulos = ANGULOS
-if angulos == "auto":
-    angulos = "radianos" if np.nanmax(np.abs(integ[:, 5])) <= 2 * np.pi + 1e-6 else "graus"
-    print(f"ângulos do integrador: {angulos} (detectado pelo M)")
-if angulos == "radianos":
-    integ[:, 2:] = np.degrees(integ[:, 2:])
-elif angulos != "graus":
-    raise ValueError(f"ANGULOS desconhecido: {angulos}")
-integ[:, 3:] %= 360.0
+def imprime_resumo(titulo, dif, distancia):
+    print(f"\n{titulo}")
+    print(f"  {'':10s} {'média':>14s} {'RMS':>14s} {'máx |dif|':>14s}")
+    for rot, col in zip(ROTULOS, dif.T):
+        print(f"  {rot:10s} {col.mean():14.6g} {np.sqrt(np.mean(col**2)):14.6g} {np.abs(col).max():14.6g}")
+    print(f"  {'dist [km]':10s} {distancia.mean():14.6g} {np.sqrt(np.mean(distancia**2)):14.6g} "
+          f"{distancia.max():14.6g}")
 
-# Período coberto pelo SPK desta lua
-cobertura = cobertura_spk(id_lua)
-dentro = np.array([spice.wnelmd(et, cobertura) for et in ets])
-if not dentro.any():
-    raise RuntimeError(f"{nome_lua}: nenhum ET do arquivo está na cobertura do SPK")
-if not dentro.all():
-    print(f"{nome_lua}: {np.count_nonzero(~dentro)} linhas fora da cobertura do SPK, ignoradas")
-datas = [d for d, ok in zip(datas, dentro) if ok]
-ets, integ = ets[dentro], integ[dentro]
 
-# Frame
-if FRAME == "EQUADOR_JUPITER":
+def main():
+    parser = argparse.ArgumentParser(description="Compara elementos de um integrador com o SPICE.")
+    parser.add_argument("arquivo", nargs="?", default=ARQUIVO_INTEGRADOR,
+                        help="saída do integrador (padrão: ARQUIVO_INTEGRADOR)")
+    parser.add_argument("--lua", default=LUA, help="nome SPICE ou código NAIF (padrão: LUA)")
+    args = parser.parse_args()
+
+    carrega_kernels(KERNELS)
+    id_lua, nome_lua = identifica_lua(args.lua)
+
+    datas, ets, integ = le_integrador(args.arquivo)
+    print(f"{args.arquivo}: {len(ets)} linhas, de {datas[0]} a {datas[-1]}")
+    integ = converte_angulos(integ, ANGULOS, "integrador")
+
+    dentro = na_cobertura(ets, id_lua, nome_lua)
+    datas = [d for d, ok in zip(datas, dentro) if ok]
+    ets, integ = ets[dentro], integ[dentro]
+
     et_frame = ets[0] if EPOCA_FRAME is None else spice.str2et(EPOCA_FRAME)
-    R = matriz_equador_jupiter(et_frame)
-    print(f"frame: equador de Júpiter congelado em {spice.et2utc(et_frame, 'C', 3)} UTC")
-elif FRAME == "J2000":
-    R = np.eye(3)
-else:
-    raise ValueError(f"FRAME desconhecido: {FRAME}")
+    R = matriz_frame(FRAME, et_frame)
+    mu = calcula_mu(id_lua, MU_KM3S2, SOMAR_GM_LUA)
+    print(f"μ = {mu:.6f} km³/s²")
 
-# μ
-if MU_KM3S2 is not None:
-    mu = MU_KM3S2
-else:
-    gm_jup = gm_corpo(599)
-    if gm_jup == 0.0:
-        raise RuntimeError("GM de Júpiter não encontrado: carregue gm_de440.tpc")
-    mu = gm_jup + (gm_corpo(id_lua) if SOMAR_GM_LUA else 0.0)
-print(f"μ = {mu:.6f} km³/s²")
+    spc, pos_spice = elementos_spice(ets, id_lua, R, mu)
+    distancia = np.linalg.norm(posicoes(integ, ets, mu) - pos_spice, axis=1)
+    dif = diferencas(integ, spc)
 
-# Elementos do SPICE nos mesmos ETs
-estados, _ = spice.spkezr(str(id_lua), ets, "J2000", "NONE", "JUPITER")
-estados = np.asarray(estados)
-spc = np.empty_like(integ)
-pos_spice = np.empty((len(ets), 3))
-for k, (et, s) in enumerate(zip(ets, estados)):
-    s_rot = np.concatenate([R @ s[:3], R @ s[3:]])
-    el = spice.oscltx(s_rot, et, mu)
-    spc[k] = [el[9], el[1], np.degrees(el[2]),
-              np.degrees(el[3]) % 360.0, np.degrees(el[4]) % 360.0, np.degrees(el[5]) % 360.0]
-    pos_spice[k] = s_rot[:3]
+    # ------------------------------ saída ---------------------------------
+    os.makedirs(PASTA_SAIDA, exist_ok=True)
+    base = os.path.join(PASTA_SAIDA, nome_lua.lower())
 
-# Posição do integrador refeita a partir dos elementos dele (mesmo μ)
-pos_integ = np.empty_like(pos_spice)
-for k, (et, (a, e, i, om, w, m)) in enumerate(zip(ets, integ)):
-    elts = [a * (1.0 - e), e, np.radians(i), np.radians(om), np.radians(w),
-            np.radians(m), et, mu]
-    pos_integ[k] = spice.conics(elts, et)[:3]
-distancia = np.linalg.norm(pos_integ - pos_spice, axis=1)
+    with open(f"{base}_comparacao.csv", "w") as f:
+        f.write("data_utc,et_tdb_s,"
+                + ",".join(f"{n}_integ" for n in NOMES_CSV) + ","
+                + ",".join(f"{n}_spice" for n in NOMES_CSV) + ","
+                + ",".join(f"d{n}" for n in NOMES_CSV) + ",distancia_km\n")
+        for d, et, li, ls, ld, dist in zip(datas, ets, integ, spc, dif, distancia):
+            f.write(f"{d},{et:.3f},"
+                    + ",".join(f"{v:.10g}" for v in np.concatenate([li, ls, ld]))
+                    + f",{dist:.6g}\n")
 
-dif = integ - spc
-for j in ANGULARES[1:]:
-    dif[:, j] = diferenca_angular(integ[:, j], spc[:, j])
+    imprime_resumo(f"{nome_lua}: integrador − SPICE ({len(ets)} instantes)", dif, distancia)
 
-# ------------------------------ saída -------------------------------------
-os.makedirs(PASTA_SAIDA, exist_ok=True)
-base = os.path.join(PASTA_SAIDA, nome_lua.lower())
-nomes = ["a_km", "e", "i_deg", "Omega_deg", "omega_deg", "M_deg"]
+    tempo = spice.et2datetime(ets)
+    titulo = f"{nome_lua} – integrador × SPICE ({FRAME}, osculadores)"
 
-with open(f"{base}_comparacao.csv", "w") as f:
-    f.write("data_utc,et_tdb_s,"
-            + ",".join(f"{n}_integ" for n in nomes) + ","
-            + ",".join(f"{n}_spice" for n in nomes) + ","
-            + ",".join(f"d{n}" for n in nomes) + ",distancia_km\n")
-    for d, et, li, ls, ld, dist in zip(datas, ets, integ, spc, dif, distancia):
-        f.write(f"{d},{et:.3f},"
-                + ",".join(f"{v:.10g}" for v in np.concatenate([li, ls, ld]))
-                + f",{dist:.6g}\n")
+    fig, eixos = plt.subplots(6, 1, figsize=(11, 13), sharex=True)
+    for j, (eixo, rot) in enumerate(zip(eixos, ROTULOS)):
+        if j in ANGULARES:  # 0–360: pontos, para não ligar os saltos 360 -> 0
+            eixo.plot(tempo, spc[:, j], ".", ms=1.2, label="SPICE")
+            eixo.plot(tempo, integ[:, j], ".", ms=1.2, alpha=0.6, label="integrador")
+            eixo.set_ylim(0, 360)
+        else:
+            eixo.plot(tempo, spc[:, j], lw=0.7, label="SPICE")
+            eixo.plot(tempo, integ[:, j], lw=0.7, alpha=0.8, label="integrador")
+        eixo.set_ylabel(rot)
+        formata_eixo(eixo)
+    eixos[0].legend(loc="upper right", fontsize=8, markerscale=6)
+    eixos[0].set_title(titulo)
+    eixos[-1].set_xlabel("data (UTC)")
+    fig.tight_layout()
+    fig.savefig(f"{base}_comparacao.png", dpi=150)
+    plt.close(fig)
 
-print(f"\n{nome_lua}: integrador − SPICE ({len(ets)} instantes)")
-print(f"  {'':10s} {'média':>14s} {'RMS':>14s} {'máx |dif|':>14s}")
-for rot, col in zip(ROTULOS, dif.T):
-    print(f"  {rot:10s} {col.mean():14.6g} {np.sqrt(np.mean(col**2)):14.6g} {np.abs(col).max():14.6g}")
-print(f"  {'dist [km]':10s} {distancia.mean():14.6g} {np.sqrt(np.mean(distancia**2)):14.6g} "
-      f"{distancia.max():14.6g}")
+    fig, eixos = plt.subplots(6, 1, figsize=(11, 13), sharex=True)
+    for j, (eixo, rot) in enumerate(zip(eixos, ROTULOS)):
+        eixo.plot(tempo, dif[:, j], lw=0.7, color="C3")
+        eixo.axhline(0.0, color="k", lw=0.5)
+        eixo.set_ylabel("Δ" + rot)
+        formata_eixo(eixo)
+    eixos[0].set_title(f"{nome_lua} – diferença integrador − SPICE")
+    eixos[-1].set_xlabel("data (UTC)")
+    fig.tight_layout()
+    fig.savefig(f"{base}_diferencas.png", dpi=150)
+    plt.close(fig)
 
-tempo = spice.et2datetime(ets)
-titulo = f"{nome_lua} – integrador × SPICE ({FRAME}, osculadores)"
-
-fig, eixos = plt.subplots(6, 1, figsize=(11, 13), sharex=True)
-for j, (eixo, rot) in enumerate(zip(eixos, ROTULOS)):
-    if j in ANGULARES[1:]:  # 0–360: pontos, para não ligar os saltos 360 -> 0
-        eixo.plot(tempo, spc[:, j], ".", ms=1.2, label="SPICE")
-        eixo.plot(tempo, integ[:, j], ".", ms=1.2, alpha=0.6, label="integrador")
-        eixo.set_ylim(0, 360)
-    else:
-        eixo.plot(tempo, spc[:, j], lw=0.7, label="SPICE")
-        eixo.plot(tempo, integ[:, j], lw=0.7, alpha=0.8, label="integrador")
-    eixo.set_ylabel(rot)
+    fig, eixo = plt.subplots(figsize=(11, 4))
+    eixo.plot(tempo, distancia, lw=0.7, color="C3")
+    eixo.set_ylabel("|r_integ − r_SPICE| [km]")
+    eixo.set_xlabel("data (UTC)")
+    eixo.set_title(f"{nome_lua} – distância entre as posições do integrador e do SPICE")
     formata_eixo(eixo)
-eixos[0].legend(loc="upper right", fontsize=8, markerscale=6)
-eixos[0].set_title(titulo)
-eixos[-1].set_xlabel("data (UTC)")
-fig.tight_layout()
-fig.savefig(f"{base}_comparacao.png", dpi=150)
-plt.close(fig)
+    fig.tight_layout()
+    fig.savefig(f"{base}_distancia.png", dpi=150)
+    plt.close(fig)
 
-fig, eixos = plt.subplots(6, 1, figsize=(11, 13), sharex=True)
-for j, (eixo, rot) in enumerate(zip(eixos, ROTULOS)):
-    eixo.plot(tempo, dif[:, j], lw=0.7, color="C3")
-    eixo.axhline(0.0, color="k", lw=0.5)
-    eixo.set_ylabel("Δ" + rot)
-    formata_eixo(eixo)
-eixos[0].set_title(f"{nome_lua} – diferença integrador − SPICE")
-eixos[-1].set_xlabel("data (UTC)")
-fig.tight_layout()
-fig.savefig(f"{base}_diferencas.png", dpi=150)
-plt.close(fig)
+    print(f"\nArquivos salvos em {os.path.abspath(PASTA_SAIDA)}")
+    spice.kclear()
 
-fig, eixo = plt.subplots(figsize=(11, 4))
-eixo.plot(tempo, distancia, lw=0.7, color="C3")
-eixo.set_ylabel("|r_integ − r_SPICE| [km]")
-eixo.set_xlabel("data (UTC)")
-eixo.set_title(f"{nome_lua} – distância entre as posições do integrador e do SPICE")
-formata_eixo(eixo)
-fig.tight_layout()
-fig.savefig(f"{base}_distancia.png", dpi=150)
-plt.close(fig)
 
-print(f"\nArquivos salvos em {os.path.abspath(PASTA_SAIDA)}")
-spice.kclear()
+if __name__ == "__main__":
+    main()
