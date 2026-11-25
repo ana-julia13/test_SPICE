@@ -63,7 +63,7 @@ for lua, px_min in LUAS.items():
         ax[5].fill_between(t, k - .35, k + .35, where=m, color="tab:red", alpha=.8, lw=0)
     ax[5].set_yticks(range(len(prob)), list(prob), fontsize=8); ax[5].invert_yaxis()
     ax[6].fill_between(t, 0, 1, where=mj, color="tab:green", lw=0)
-    ax[6].set_yticks([.5], [f"JANELA (≥ {DUR_MIN // 60} min)"], fontsize=8); ax[6].set_ylim(0, 1); ax[6].margins(x=0)
+    ax[6].set_yticks([.5], [f"JANELA (≥ {DUR_MIN // 60} min)"], fontsize=8); ax[6].set_ylim(0, 1); ax[6].set_xlim(t[0], t[-1])
     ax[6].xaxis.set_major_formatter(mdates.ConciseDateFormatter(ax[6].xaxis.get_major_locator())); ax[6].set_xlabel("data (UTC)")
     for a in ax: a.grid(True, axis="x", alpha=.6)
     ax[0].set_title(f"{lua.capitalize()} – D ≈ {2 * Rl:.0f} km ({os.path.basename(MK)})")
