@@ -1,11 +1,11 @@
-import os, sys
+import os
 import numpy as np
 import matplotlib; matplotlib.use("Agg")
 import matplotlib.pyplot as plt, matplotlib.dates as mdates
 import spiceypy as sp
 
 MK = "/pho/figaro/estec/juice/kernels/mk/juice_plan.tm"
-INI, FIM = sys.argv[1:3] if len(sys.argv) == 3 else ("2032-05-09 00:00", "2032-05-11 12:00")
+INI, FIM = "2032-05-09 00:00", "2032-05-11 12:00"
 PASSO, DUR_MIN, PX_LIM, LAT_MAX, F_SUL, F_NORTE = 60, 600, 10, 10, 70, 110
 LUAS = {"METIS": 3, "ADRASTEA": 2, "AMALTHEA": 10, "THEBE": 6}  # lua: pixels mínimos
 GAL = ["IO", "EUROPA", "GANYMEDE", "CALLISTO"]
