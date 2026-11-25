@@ -1,7 +1,7 @@
 import os, sys
 import numpy as np
 import matplotlib; matplotlib.use("Agg")
-import matplotlib.pyplot as plt
+import matplotlib.pyplot as plt, matplotlib.dates as mdates
 import spiceypy as sp
 
 MK = "/pho/figaro/estec/juice/kernels/mk/juice_plan.tm"
@@ -51,14 +51,20 @@ for lua, px_min in LUAS.items():
     print(f"{lua}: {len(jan)} janela(s)")
 
     t = sp.et2datetime(ets)
-    fig, ax = plt.subplots(7, 1, figsize=(12, 17), sharex=True)
-    for a, y, nome in zip(ax, [d, px, lat, lon, fase], ["dist [km]", "pixels", "lat [°]", "lon [°E]", "fase [°]"]):
-        a.plot(t, y, ".", ms=1); a.set_ylabel(nome); a.grid(alpha=.3)
-    ax[0].set_yscale("log"); ax[1].axhline(px_min, c="gray", ls="--")
-    ax[2].axhspan(-LAT_MAX, LAT_MAX, alpha=.15); ax[4].plot(t, fmax, "r--")
+    fig, ax = plt.subplots(7, 1, figsize=(12, 17), sharex=True, gridspec_kw={"height_ratios": [1] * 5 + [1.4, .35]})
+    for a, y, nome, cor, fmt in zip(ax, [d, px, lat, lon, fase], ["distância [km]", "pixels", "lat. sub-S/C [°]", "lon. sub-S/C [°E]", "fase α [°]"],
+                                    ["tab:blue", "tab:orange", "tab:green", "tab:brown", "tab:purple"], ["-", "-", "-", ".", "-"]):
+        a.plot(t, y, fmt, c=cor, lw=.6, ms=1.5); a.set_ylabel(nome); a.grid(alpha=.3)
+    ax[0].set_yscale("log"); ax[1].axhline(px_min, c="gray", ls="--", lw=.8); ax[1].set_ylim(bottom=0)
+    ax[2].axhspan(-LAT_MAX, LAT_MAX, color="tab:green", alpha=.15); ax[2].axhline(0, c="gray", lw=.6)
+    ax[3].set_ylim(0, 360); ax[3].set_yticks(range(0, 361, 90))
+    ax[4].plot(t, fmax, "r--", lw=.8); ax[4].set_ylim(0, 180)
     for k, m in enumerate(prob.values()):
-        ax[5].fill_between(t, k - .35, k + .35, where=m, color="r", lw=0)
-    ax[5].set_yticks(range(len(prob)), list(prob), fontsize=8)
-    ax[6].fill_between(t, 0, 1, where=mj, color="g", lw=0)
-    ax[6].set_ylabel("JANELA"); ax[6].set_yticks([])
-    ax[0].set_title(lua); fig.tight_layout(); fig.savefig(f"janelas_{lua.lower()}.png", dpi=150); plt.close(fig)
+        ax[5].fill_between(t, k - .35, k + .35, where=m, color="tab:red", alpha=.8, lw=0)
+    ax[5].set_yticks(range(len(prob)), list(prob), fontsize=8); ax[5].invert_yaxis()
+    ax[6].fill_between(t, 0, 1, where=mj, color="tab:green", lw=0)
+    ax[6].set_yticks([.5], [f"JANELA (≥ {DUR_MIN // 60} min)"], fontsize=8); ax[6].set_ylim(0, 1); ax[6].margins(x=0)
+    ax[6].xaxis.set_major_formatter(mdates.ConciseDateFormatter(ax[6].xaxis.get_major_locator())); ax[6].set_xlabel("data (UTC)")
+    for a in ax: a.grid(True, axis="x", alpha=.6)
+    ax[0].set_title(f"{lua.capitalize()} – D ≈ {2 * Rl:.0f} km ({os.path.basename(MK)})")
+    fig.tight_layout(); fig.savefig(f"janelas_{lua.lower()}.png", dpi=150); plt.close(fig)
